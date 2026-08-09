@@ -1,8 +1,9 @@
 import Link from "next/link"
-import { Upload, ReceiptText, FileText } from "lucide-react"
+import { Upload, ReceiptText } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { EmptyState } from "@/components/empty-state"
 import { StatusBadge } from "@/components/status-badge"
+import { InvoiceViewCell } from "@/components/invoice-view-cell"
 import { getInvoices } from "@/lib/queries"
 import { formatGBP } from "@/lib/utils"
 
@@ -97,19 +98,13 @@ export default async function InvoicesPage() {
                         )}
                       </td>
                       <td className="px-4 py-3">
-                        {inv.sourceFilePathname ? (
-                          <a
-                            href={inv.sourceFilePathname}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 text-primary hover:underline"
-                          >
-                            <FileText className="h-4 w-4" strokeWidth={1.75} />
-                            View
-                          </a>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
+                        <InvoiceViewCell
+                          fileUrl={inv.sourceFilePathname}
+                          invoiceNumber={inv.invoiceNumber}
+                          supplierName={inv.supplierName}
+                          pageStart={inv.sourcePageStart}
+                          pageEnd={inv.sourcePageEnd}
+                        />
                       </td>
                     </tr>
                   ))

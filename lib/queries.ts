@@ -254,6 +254,8 @@ export type InvoiceRow = {
   lineItemCount: number
   sourceFileName: string | null
   sourceFilePathname: string | null
+  sourcePageStart: number | null
+  sourcePageEnd: number | null
 }
 
 export async function getInvoices(): Promise<InvoiceRow[]> {
@@ -262,6 +264,7 @@ export async function getInvoices(): Promise<InvoiceRow[]> {
       inv.invoice_number, inv.invoice_date, inv.transaction_type,
       inv.net, inv.vat, inv.gross, inv.status,
       inv.source_file_name, inv.source_file_pathname,
+      inv.source_page_start, inv.source_page_end,
       COALESCE(li.cnt, 0) AS line_item_count
     FROM invoices inv
     JOIN suppliers s ON s.id = inv.supplier_id
@@ -285,6 +288,8 @@ export async function getInvoices(): Promise<InvoiceRow[]> {
     lineItemCount: n(r.line_item_count),
     sourceFileName: r.source_file_name ?? null,
     sourceFilePathname: r.source_file_pathname ?? null,
+    sourcePageStart: r.source_page_start == null ? null : Number(r.source_page_start),
+    sourcePageEnd: r.source_page_end == null ? null : Number(r.source_page_end),
   }))
 }
 
@@ -383,10 +388,12 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
     vat: n(r.vat),
     gross: n(r.gross),
     status: r.status,
-    lineItemCount: n(r.line_item_count),
-    sourceFileName: null,
-    sourceFilePathname: null,
+  lineItemCount: n(r.line_item_count),
+  sourceFileName: null,
+  sourceFilePathname: null,
+  sourcePageStart: null,
+  sourcePageEnd: null,
   }))
-}
+  }
 
 

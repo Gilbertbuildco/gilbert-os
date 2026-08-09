@@ -36,6 +36,8 @@ interface Draft {
   vat: string
   gross: string
   notes: string
+  pageStart: number | null
+  pageEnd: number | null
   lines: DraftLine[]
 }
 
@@ -92,6 +94,8 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       vat: d.totals?.vat != null ? String(d.totals.vat) : "",
       gross: d.totals?.gross != null ? String(d.totals.gross) : "",
       notes: "",
+      pageStart: d.pageStart ?? null,
+      pageEnd: d.pageEnd ?? d.pageStart ?? null,
       lines: (d.lineItems ?? []).map((li) => ({
         description: li.description ?? "",
         quantity: li.quantity != null ? String(li.quantity) : "",
@@ -161,6 +165,8 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       vat: "",
       gross: "",
       notes: "",
+      pageStart: null,
+      pageEnd: null,
       lines: [{ ...emptyLine }],
     }
   }
@@ -255,6 +261,8 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           gross: parseFloat(draft.gross) || 0,
           sourceFileName: fileName,
           sourceFilePathname: sourcePathname,
+          sourcePageStart: draft.pageStart,
+          sourcePageEnd: draft.pageEnd,
           notes: draft.notes.trim() || null,
           lineItems: payloadLines,
         })

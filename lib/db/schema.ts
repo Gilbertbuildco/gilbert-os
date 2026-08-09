@@ -64,6 +64,10 @@ export const invoices = pgTable("invoices", {
   status: text("status").notNull().default("confirmed"),
   sourceFileName: text("source_file_name"),
   sourceFilePathname: text("source_file_pathname"),
+  // 1-based inclusive page range this invoice occupies within its source file.
+  // Null means "unknown" (fall back to showing the whole document).
+  sourcePageStart: integer("source_page_start"),
+  sourcePageEnd: integer("source_page_end"),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })

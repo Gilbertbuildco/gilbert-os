@@ -24,6 +24,18 @@ const documentSchema = z.object({
   transactionType: z
     .enum(["invoice", "credit"])
     .describe("'credit' if this is a credit note / refund, otherwise 'invoice'"),
+  pageStart: z
+    .number()
+    .int()
+    .nullable()
+    .describe("1-based number of the FIRST page of the source file this document appears on"),
+  pageEnd: z
+    .number()
+    .int()
+    .nullable()
+    .describe(
+      "1-based number of the LAST page of the source file this document appears on. Equal to pageStart for a single-page document.",
+    ),
   lineItems: z.array(lineItemSchema),
   totals: z.object({
     net: z.number().describe("Total net (excluding VAT)"),
@@ -78,6 +90,8 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
     "invoices or credit notes (for example a scanned batch or a supplier statement covering several documents). " +
     "Identify every distinct document and return each as its own entry in the 'documents' array. " +
     "Treat a new invoice/credit note number, a new document header, or a restarted totals block as a new document. " +
+    "For each document, report the 1-based page range it occupies within the file via pageStart and pageEnd " +
+    "(a single-page invoice has pageStart === pageEnd; a document spanning pages 3 to 4 has pageStart 3 and pageEnd 4). " +
     "Read every line item for each. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless " +
     "stated otherwise. Never invent line items or documents that are not present. If a value is missing, use null."
 

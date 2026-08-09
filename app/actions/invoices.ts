@@ -38,6 +38,8 @@ export type CommitInvoiceInput = {
   gross: number
   sourceFileName: string | null
   sourceFilePathname: string | null
+  sourcePageStart: number | null
+  sourcePageEnd: number | null
   notes: string | null
   lineItems: CommitLineItem[]
 }
@@ -81,6 +83,8 @@ export async function commitInvoice(input: CommitInvoiceInput) {
       status: "confirmed",
       sourceFileName: input.sourceFileName,
       sourceFilePathname: input.sourceFilePathname,
+      sourcePageStart: input.sourcePageStart,
+      sourcePageEnd: input.sourcePageEnd,
       notes: input.notes,
     })
     .returning()

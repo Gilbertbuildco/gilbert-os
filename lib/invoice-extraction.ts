@@ -3,6 +3,7 @@ import { generateObject } from "ai"
 import { z } from "zod"
 import { put } from "@vercel/blob"
 import { PDFDocument } from "pdf-lib"
+import { extractionGovernor } from "@/lib/rate-governor"
 
 // Vision-capable models available on the zero-config AI Gateway. We try them
 // in order so a rate-limit or availability issue on one falls back to another.
@@ -88,6 +89,7 @@ export type ExtractedInvoice = z.infer<typeof documentSchema>
 // and so retry logic can treat transient vs permanent differently.
 export type ExtractionErrorReason =
   | "rate_limit"
+  | "quota_exceeded"
   | "timeout"
   | "too_large"
   | "no_document"
@@ -118,6 +120,11 @@ export type ExtractionResult =
       fileName: string
       /** Whether a retry could plausibly succeed (rate limit, timeout, gateway). */
       retryable: boolean
+      /**
+       * Hint (ms) for how long the CLIENT queue should pause before retrying
+       * this file, when the failure was quota/rate related. null when unknown.
+       */
+      retryAfterMs: number | null
       sourceFilePathname: string | null
       sourceFileHash: string | null
     }
@@ -126,6 +133,12 @@ export type ExtractionResult =
 
 export function classifyError(message: string): { reason: ExtractionErrorReason; retryable: boolean } {
   const m = message.toLowerCase()
+  // Free-tier gate: a hard credit/allowance limit (Vercel AI Gateway zero-config
+  // OIDC). Distinct from a transient RPM 429 — it does NOT reset within seconds
+  // and returns no retry-after, so we surface it separately with an upgrade path
+  // rather than retrying forever.
+  if (/free tier|upgrade to paid|paid credits|insufficient.*(credit|quota|balance)|billing/.test(m))
+    return { reason: "quota_exceeded", retryable: true }
   if (/rate.?limit|429|quota|too many requests|resource[_ ]exhausted/.test(m))
     return { reason: "rate_limit", retryable: true }
   if (/timeout|timed out|aborted|deadline|etimedout/.test(m)) return { reason: "timeout", retryable: true }
@@ -164,6 +177,22 @@ const INSTRUCTIONS =
  * exponential-backoff retry loop across the model fallback list. Throws a final
  * Error (with a classifiable message) only if every attempt fails.
  */
+/**
+ * Error thrown when extraction ultimately fails, carrying the classified reason
+ * and (for quota/rate failures) a hint for how long the caller should wait.
+ */
+class ExtractionError extends Error {
+  constructor(
+    message: string,
+    readonly reason: ExtractionErrorReason,
+    readonly retryable: boolean,
+    readonly retryAfter: number | null,
+  ) {
+    super(message)
+    this.name = "ExtractionError"
+  }
+}
+
 async function extractBytes(bytes: Uint8Array, mediaType: string, fileName: string): Promise<ExtractedInvoice[]> {
   const messages = [
     {
@@ -176,39 +205,55 @@ async function extractBytes(bytes: Uint8Array, mediaType: string, fileName: stri
   ]
 
   let lastError = "unknown error"
+  let lastReason: ExtractionErrorReason = "unknown"
+  let lastRetryAfter: number | null = null
 
   for (const model of EXTRACTION_MODELS) {
     for (let attempt = 0; attempt < MAX_TRANSIENT_ATTEMPTS; attempt++) {
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), PER_ATTEMPT_TIMEOUT_MS)
       try {
-        const { object } = await generateObject({
-          model,
-          schema: extractionSchema,
-          instructions: INSTRUCTIONS,
-          messages,
-          // We own retries below so we control the backoff timing precisely.
-          maxRetries: 0,
-          abortSignal: controller.signal,
-        })
+        // Governor-paced: single-flight + min spacing + honour any active pause,
+        // so a chunked extraction can never burst past the quota on its own.
+        const { object } = await extractionGovernor.run(() =>
+          generateObject({
+            model,
+            schema: extractionSchema,
+            instructions: INSTRUCTIONS,
+            messages,
+            // We own retries here so we control backoff timing precisely.
+            maxRetries: 0,
+            abortSignal: controller.signal,
+          }),
+        )
         clearTimeout(timer)
         return (object.documents ?? []).filter((d) => d && d.supplierName)
       } catch (err) {
         clearTimeout(timer)
         const message = (err as Error).message ?? String(err)
-        lastError = message
         const { reason, retryable } = classifyError(message)
+        lastError = message
+        lastReason = reason
+        lastRetryAfter = retryAfterMs(message)
         console.log(`[v0] extraction attempt failed model=${model} attempt=${attempt} reason=${reason}: ${message}`)
+
+        // Hard free-tier/credit gate: server-side retries won't help (it does not
+        // reset within our window). Back off the governor and surface immediately
+        // so the CLIENT queue can pause the whole batch and retry later.
+        if (reason === "quota_exceeded") {
+          extractionGovernor.penalise(lastRetryAfter ?? 30_000)
+          throw new ExtractionError(message, reason, true, lastRetryAfter ?? 30_000)
+        }
 
         if (!retryable) break // permanent for this model (e.g. too_large) — try next model or give up
 
-        // Exponential backoff with full jitter; honour retry-after for rate limits.
         const isLast = attempt === MAX_TRANSIENT_ATTEMPTS - 1
         if (!isLast) {
+          // Exponential backoff with full jitter; honour retry-after when given.
           const base = reason === "rate_limit" ? 8_000 : 1_000
-          const explicit = retryAfterMs(message)
-          const backoff = explicit ?? Math.min(base * 2 ** attempt, 60_000)
+          const backoff = lastRetryAfter ?? Math.min(base * 2 ** attempt, 60_000)
           const jittered = Math.round(backoff / 2 + Math.random() * (backoff / 2))
+          if (reason === "rate_limit") extractionGovernor.penalise(jittered)
           console.log(`[v0] backing off ${jittered}ms before retry`)
           await sleep(jittered)
           continue
@@ -217,7 +262,7 @@ async function extractBytes(bytes: Uint8Array, mediaType: string, fileName: stri
     }
   }
 
-  throw new Error(lastError)
+  throw new ExtractionError(lastError, lastReason, classifyError(lastError).retryable, lastRetryAfter)
 }
 
 /** Copy a page range [start,end] (1-based, inclusive) of a PDF into new bytes. */
@@ -296,6 +341,7 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
       error: "That file was empty. You can enter the details manually below.",
       errorReason: "empty_file",
       retryable: false,
+      retryAfterMs: null,
       fileName: file.name,
       sourceFilePathname,
       sourceFileHash,
@@ -324,6 +370,7 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
         error: "No invoice could be read from that file. You can still enter the details manually below.",
         errorReason: "no_document" as const,
         retryable: false,
+        retryAfterMs: null,
         fileName: file.name,
         sourceFilePathname,
         sourceFileHash,
@@ -381,8 +428,15 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
         }
         all.push(...chunkDocs)
       } catch (err) {
-        // One bad window must not fail the whole file — log and keep going.
-        const { reason } = classifyError((err as Error).message)
+        const reason = err instanceof ExtractionError ? err.reason : classifyError((err as Error).message).reason
+        // A quota/rate failure will affect EVERY remaining window too — burning
+        // through them just wastes the allowance. Abort the whole file and let
+        // the client queue pause and re-read it later (it is retryable).
+        if (reason === "quota_exceeded" || reason === "rate_limit") {
+          console.log(`[v0] window ${start}-${end} hit ${reason}; aborting file for client re-queue`)
+          throw err
+        }
+        // Any other per-window failure must not fail the file — skip that window.
         console.log(`[v0] window ${start}-${end} failed (reason=${reason}); continuing`)
       }
       if (end >= pageCount) break
@@ -392,21 +446,26 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
     return finalize(merged, truncatedAtPage ? { incomplete: true, truncatedAtPage } : undefined)
   } catch (err) {
     const message = (err as Error).message ?? String(err)
-    const { reason, retryable } = classifyError(message)
+    const reason = err instanceof ExtractionError ? err.reason : classifyError(message).reason
+    const retryable = err instanceof ExtractionError ? err.retryable : classifyError(message).retryable
+    const retryAfter = err instanceof ExtractionError ? err.retryAfter : retryAfterMs(message)
     console.log(`[v0] invoice extraction gave up fileName="${file.name}" reason=${reason}: ${message}`)
     const userError =
-      reason === "rate_limit"
-        ? "Automatic reading is temporarily rate-limited. It will retry automatically, or you can enter the details manually below."
-        : reason === "timeout"
-          ? "Reading this document took too long. You can retry it, or enter the details manually below."
-          : reason === "too_large"
-            ? "This document was too large to read in one pass. You can retry it, or enter the details manually below."
-            : "Could not read that document automatically. You can retry it, or enter the details manually below."
+      reason === "quota_exceeded"
+        ? "Automatic reading has hit the AI free-tier limit. The queue will keep retrying automatically; add AI Gateway credits for reliable bulk reading, or enter the details manually below."
+        : reason === "rate_limit"
+          ? "Automatic reading is temporarily rate-limited. It will retry automatically, or you can enter the details manually below."
+          : reason === "timeout"
+            ? "Reading this document took too long. You can retry it, or enter the details manually below."
+            : reason === "too_large"
+              ? "This document was too large to read in one pass. You can retry it, or enter the details manually below."
+              : "Could not read that document automatically. You can retry it, or enter the details manually below."
     return {
       ok: false,
       error: userError,
       errorReason: reason,
       retryable,
+      retryAfterMs: retryAfter,
       fileName: file.name,
       sourceFilePathname,
       sourceFileHash,

@@ -4,14 +4,13 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
-import { StatusBadge } from "@/components/status-badge"
 import { commitInvoice, classifyDocuments, type CommitLineItem } from "@/app/actions/invoices"
 import type { ExtractedInvoice, ExtractionResult } from "@/lib/invoice-extraction"
 import type { DuplicateVerdict } from "@/lib/duplicate-detection"
 import { fetchCostPackages } from "@/app/actions/lookups"
 import { BatchProgress, type FileProgress } from "@/components/upload/batch-progress"
 import { DuplicateNotice } from "@/components/upload/duplicate-notice"
-import { BatchSummary } from "@/components/upload/batch-summary"
+import { BatchSummary, type BatchSummaryData } from "@/components/upload/batch-summary"
 import type { ExistingInvoiceRef } from "@/lib/duplicate-detection"
 
 // One document's final disposition in a batch, kept raw so the summary screen
@@ -507,6 +506,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
 
   const verdict = draft.verdict
   const isAlreadyImported = verdict?.status === "already_imported"
+  const isPossibleDuplicate = verdict?.status === "possible_duplicate"
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-6 px-8 py-8">
@@ -820,7 +820,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           >
             Cancel
           </button>
-          {total > 1 && !saved[current] ? (
+          {!saved[current] ? (
             <button
               type="button"
               onClick={skipCurrent}
@@ -830,13 +830,16 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
               {isAlreadyImported ? "Skip (already imported)" : "Skip this document"}
             </button>
           ) : null}
+          {/* Already-imported documents can only be skipped — never re-imported
+              from the batch flow — so we hide the import action entirely. */}
+          {isAlreadyImported && !saved[current] ? null : (
           <button
             type="button"
             onClick={commit}
-            disabled={saving}
+            disabled={saving || (isPossibleDuplicate && !draft.confirmedNew)}
             className={cn(
               "flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold disabled:opacity-60",
-              verdict && verdict.status !== "new"
+              isPossibleDuplicate
                 ? "bg-warning text-warning-foreground hover:opacity-90"
                 : "bg-primary text-primary-foreground hover:opacity-90",
             )}
@@ -844,17 +847,18 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
             {saving ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} /> : null}
             {saved[current]
               ? "Save again"
-              : verdict && verdict.status !== "new"
+              : isPossibleDuplicate
                 ? "Import anyway"
                 : savedCount + 1 < total
                   ? "Save & next document"
                   : total > 1
                     ? "Save last document"
                     : "Confirm & save"}
-            {!saving && !saved[current] && !(verdict && verdict.status !== "new") && savedCount + 1 < total ? (
+            {!saving && !saved[current] && !isPossibleDuplicate && savedCount + 1 < total ? (
               <ChevronRight className="h-4 w-4" strokeWidth={2} />
             ) : null}
           </button>
+          )}
         </div>
       </div>
     </div>

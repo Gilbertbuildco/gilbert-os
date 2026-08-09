@@ -124,7 +124,7 @@ export type ExtractionResult =
 
 // --- Error classification ----------------------------------------------------
 
-function classifyError(message: string): { reason: ExtractionErrorReason; retryable: boolean } {
+export function classifyError(message: string): { reason: ExtractionErrorReason; retryable: boolean } {
   const m = message.toLowerCase()
   if (/rate.?limit|429|quota|too many requests|resource[_ ]exhausted/.test(m))
     return { reason: "rate_limit", retryable: true }
@@ -138,9 +138,13 @@ function classifyError(message: string): { reason: ExtractionErrorReason; retrya
   return { reason: "unknown", retryable: true }
 }
 
-/** Extract retry-after seconds from an error message/headers if present. */
-function retryAfterMs(message: string): number | null {
-  const m = message.match(/retry[- ]after[":\s]+(\d+)/i)
+/**
+ * Extract retry-after seconds from an error message/headers if present.
+ * Handles the HTTP header form ("Retry-After: 12"), and the JSON forms
+ * providers use ("retry_after": 3 / "retryAfter": 3 / retryDelay: 3s).
+ */
+export function retryAfterMs(message: string): number | null {
+  const m = message.match(/retry[-_ ]?after["':\s]+(\d+)/i) ?? message.match(/retry[-_ ]?delay["':\s]+(\d+)/i)
   if (m) return Math.min(parseInt(m[1], 10) * 1000, 65_000)
   return null
 }
@@ -227,7 +231,7 @@ async function slicePdf(src: PDFDocument, startPage1: number, endPage1: number):
 }
 
 /** De-duplicate documents merged from overlapping page windows. */
-function mergeDocuments(docs: ExtractedInvoice[]): ExtractedInvoice[] {
+export function mergeDocuments(docs: ExtractedInvoice[]): ExtractedInvoice[] {
   const byKey = new Map<string, ExtractedInvoice>()
   for (const d of docs) {
     const key = [

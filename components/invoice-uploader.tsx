@@ -13,6 +13,7 @@ import {
 import type { ExtractedInvoice, ExtractionResult } from "@/lib/invoice-extraction"
 import type { DuplicateVerdict } from "@/lib/duplicate-detection"
 import { fetchCostPackages } from "@/app/actions/lookups"
+import { runPool } from "@/lib/async-pool"
 import { BatchProgress, type FileProgress } from "@/components/upload/batch-progress"
 import { DuplicateNotice } from "@/components/upload/duplicate-notice"
 import { BatchSummary, type BatchSummaryData } from "@/components/upload/batch-summary"
@@ -41,24 +42,6 @@ type PackageOption = { id: number; code: string | null; name: string }
 // number of simultaneous AI extraction requests — the server-side exponential
 // backoff absorbs the rest. Raising this trades rate-limit headroom for speed.
 const BATCH_CONCURRENCY = 3
-
-// Bounded-concurrency worker pool. Each worker pulls the next index until the
-// queue drains; a worker never throws (the task swallows its own errors), so
-// one file's failure can never abort the others.
-async function runPool(count: number, concurrency: number, task: (index: number) => Promise<void>) {
-  let cursor = 0
-  const workers = Array.from({ length: Math.min(concurrency, count) }, async () => {
-    while (cursor < count) {
-      const i = cursor++
-      try {
-        await task(i)
-      } catch {
-        // Defensive only — task is expected to handle its own errors.
-      }
-    }
-  })
-  await Promise.all(workers)
-}
 
 interface DraftLine {
   description: string

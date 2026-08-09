@@ -38,13 +38,15 @@ type ProjectOption = { id: number; name: string; slug: string }
 type SupplierOption = { id: number; name: string }
 type PackageOption = { id: number; code: string | null; name: string }
 
-// Reliability-first ingestion. The queue processes ONE extraction at a time by
-// default with deliberate spacing between requests, and pauses the whole batch
-// on a rate-limit/quota response — so a normal bulk upload drips steadily
-// instead of bursting past the provider limit. See lib/extraction-queue.ts.
+// Paid-tier ingestion. With paid AI Gateway capacity the provider sustains far
+// higher throughput (measured: 30 concurrent requests with zero rate-limiting),
+// so we process a few files in parallel with light spacing for speed. The queue
+// keeps its full safety net: on any 429/quota response it still pauses the whole
+// batch, honours retry-after and auto-retries, so if a limit is ever reached it
+// degrades gracefully instead of failing files. See lib/extraction-queue.ts.
 const QUEUE_CONFIG = {
-  concurrency: 1,
-  minSpacingMs: 1500,
+  concurrency: 4,
+  minSpacingMs: 300,
 } as const
 
 interface DraftLine {

@@ -72,6 +72,10 @@ class RateGovernor {
   }
 }
 
-// Default pacing: one model call at a time, spaced ~1.2s, with pauses capped at
-// 60s. Conservative by design — we prefer slow-and-reliable over fast bursts.
-export const extractionGovernor = new RateGovernor({ minIntervalMs: 1200, maxPauseMs: 60_000 })
+// Default pacing (paid AI Gateway capacity): light 200ms spacing between the
+// start of consecutive in-instance calls — enough to smooth a large PDF's chunk
+// calls without adding meaningful latency — while the single-flight ordering and
+// the global pause-on-429 (penalise) remain the real protection against bursts.
+// If a rate limit is ever hit, penalise() still backs the whole instance off up
+// to 60s and the client queue pauses/auto-retries across requests.
+export const extractionGovernor = new RateGovernor({ minIntervalMs: 200, maxPauseMs: 60_000 })

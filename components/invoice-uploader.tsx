@@ -5,9 +5,29 @@ import { useRouter } from "next/navigation"
 import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
 import { StatusBadge } from "@/components/status-badge"
-import { commitInvoice, type CommitLineItem } from "@/app/actions/invoices"
+import { commitInvoice, classifyDocuments, type CommitLineItem } from "@/app/actions/invoices"
 import type { ExtractedInvoice, ExtractionResult } from "@/lib/invoice-extraction"
+import type { DuplicateVerdict } from "@/lib/duplicate-detection"
 import { fetchCostPackages } from "@/app/actions/lookups"
+import { BatchProgress, type FileProgress } from "@/components/upload/batch-progress"
+import { DuplicateNotice } from "@/components/upload/duplicate-notice"
+import { BatchSummary } from "@/components/upload/batch-summary"
+import type { ExistingInvoiceRef } from "@/lib/duplicate-detection"
+
+// One document's final disposition in a batch, kept raw so the summary screen
+// can aggregate totals however it likes.
+type BatchOutcome = {
+  label: string
+  supplierName: string
+  invoiceNumber: string | null
+  transactionType: "invoice" | "credit"
+  net: number
+  gross: number | null
+  priceLines: number
+  result: "imported" | "duplicate" | "skipped" | "failed"
+  reason: string | null
+  existing: ExistingInvoiceRef | null
+}
 
 type ProjectOption = { id: number; name: string; slug: string }
 type SupplierOption = { id: number; name: string }
@@ -38,6 +58,15 @@ interface Draft {
   notes: string
   pageStart: number | null
   pageEnd: number | null
+  // Per-document source metadata — batch uploads mix documents from several
+  // files, so this cannot be a single top-level value.
+  sourceFileName: string | null
+  sourceFilePathname: string | null
+  sourceFileHash: string | null
+  // Duplicate classification for this document (null while unknown).
+  verdict: DuplicateVerdict | null
+  // For a possible-duplicate, the user must tick "import anyway" before commit.
+  confirmedNew: boolean
   lines: DraftLine[]
 }
 
@@ -60,12 +89,15 @@ interface Props {
 
 export function InvoiceUploader({ projects, suppliers }: Props) {
   const router = useRouter()
-  const [step, setStep] = useState<"upload" | "review">("upload")
-  const [fileName, setFileName] = useState<string | null>(null)
-  const [sourcePathname, setSourcePathname] = useState<string | null>(null)
+  const [step, setStep] = useState<"upload" | "reading" | "review" | "summary">("upload")
   const [extracting, setExtracting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [packages, setPackages] = useState<PackageOption[]>([])
+  // Per-file progress shown while a batch is being read.
+  const [fileProgress, setFileProgress] = useState<FileProgress[]>([])
+  const [processedCount, setProcessedCount] = useState(0)
+  // Final per-document outcomes shown on the summary screen.
+  const [outcomes, setOutcomes] = useState<BatchOutcome[]>([])
   // When a file contains several documents we hold them all here and step
   // through one at a time. `drafts` is the working copy for each document and
   // `saved` marks which have already been committed to the database.
@@ -82,7 +114,10 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     setDrafts((prev) => prev.map((d, i) => (i === current ? next : d)))
   }
 
-  function draftFromDocument(d: ExtractedInvoice): Draft {
+  function draftFromDocument(
+    d: ExtractedInvoice,
+    source: { fileName: string | null; pathname: string | null; hash: string | null },
+  ): Draft {
     return {
       supplierId: "",
       newSupplierName: d.supplierName ?? "",
@@ -96,6 +131,11 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       notes: "",
       pageStart: d.pageStart ?? null,
       pageEnd: d.pageEnd ?? d.pageStart ?? null,
+      sourceFileName: source.fileName,
+      sourceFilePathname: source.pathname,
+      sourceFileHash: source.hash,
+      verdict: null,
+      confirmedNew: false,
       lines: (d.lineItems ?? []).map((li) => ({
         description: li.description ?? "",
         quantity: li.quantity != null ? String(li.quantity) : "",
@@ -110,20 +150,8 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     }
   }
 
-  function fallbackToManual(message: string) {
-    setError(message)
-    setSourcePathname(null)
-    setDrafts([blankDraft()])
-    setSaved([false])
-    setCurrent(0)
-    setStep("review")
-  }
-
-  async function handleFile(file: File) {
-    setError(null)
-    setExtracting(true)
-    setFileName(file.name)
-
+  // Read one file → its extracted documents (or a single manual-fallback draft).
+  async function readFile(file: File): Promise<Draft[]> {
     let result: ExtractionResult
     try {
       const fd = new FormData()
@@ -132,24 +160,80 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       result = (await res.json()) as ExtractionResult
     } catch (err) {
       console.log("[v0] upload/extraction request failed:", (err as Error).message)
-      setExtracting(false)
-      fallbackToManual(
-        "We couldn't read that file automatically, but you can enter the details manually below.",
-      )
-      return
+      // Manual-entry fallback seeded with the file so its source is still kept.
+      return [
+        {
+          ...blankDraft(),
+          sourceFileName: file.name,
+        },
+      ]
     }
-    setExtracting(false)
 
     if (!result.ok) {
-      fallbackToManual(result.error)
-      return
+      return [{ ...blankDraft(), sourceFileName: result.fileName }]
     }
 
-    setSourcePathname(result.sourceFilePathname)
-    const nextDrafts = result.documents.map(draftFromDocument)
-    setDrafts(nextDrafts)
-    setSaved(nextDrafts.map(() => false))
-    setCurrent(0)
+    const source = {
+      fileName: result.fileName,
+      pathname: result.sourceFilePathname,
+      hash: result.sourceFileHash,
+    }
+    return result.documents.map((d) => draftFromDocument(d, source))
+  }
+
+  // Batch entry point: read every selected file (sequentially, so we don't
+  // hammer the model), then classify all detected documents for duplicates
+  // before showing the review screen.
+  async function handleFiles(files: File[]) {
+    if (files.length === 0) return
+    setError(null)
+    setExtracting(true)
+    setStep("reading")
+    setProcessedCount(0)
+    setFileProgress(files.map((f) => ({ fileName: f.name, status: "pending", documentCount: 0 })))
+
+    const collected: Draft[] = []
+    for (let i = 0; i < files.length; i++) {
+      setFileProgress((prev) => prev.map((p, idx) => (idx === i ? { ...p, status: "reading" } : p)))
+      const draftsForFile = await readFile(files[i])
+      collected.push(...draftsForFile)
+      const failed = draftsForFile.every((d) => d.sourceFilePathname === null && d.verdict === null)
+      setFileProgress((prev) =>
+        prev.map((p, idx) =>
+          idx === i
+            ? { ...p, status: failed ? "failed" : "done", documentCount: draftsForFile.length }
+            : p,
+        ),
+      )
+      setProcessedCount(i + 1)
+    }
+
+    // Classify against the database (and within this batch) for duplicates.
+    try {
+      const verdicts = await classifyDocuments(
+        collected.map((d) => ({
+          supplierName: d.newSupplierName,
+          invoiceNumber: d.invoiceNumber.trim() || null,
+          transactionType: d.transactionType,
+          net: d.net ? parseFloat(d.net) : null,
+          vat: d.vat ? parseFloat(d.vat) : null,
+          gross: d.gross ? parseFloat(d.gross) : null,
+          invoiceDate: d.invoiceDate || null,
+          sourceFileHash: d.sourceFileHash,
+        })),
+      )
+      for (let i = 0; i < collected.length; i++) collected[i].verdict = verdicts[i] ?? null
+    } catch (err) {
+      console.log("[v0] duplicate classification failed:", (err as Error).message)
+      // Non-fatal: proceed without verdicts rather than block ingestion.
+    }
+
+    setExtracting(false)
+    setDrafts(collected)
+    setSaved(collected.map(() => false))
+    // Start on the first document that isn't already imported, if any.
+    const firstActionable = collected.findIndex((d) => d.verdict?.status !== "already_imported")
+    setCurrent(firstActionable === -1 ? 0 : firstActionable)
     setStep("review")
   }
 
@@ -167,6 +251,11 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       notes: "",
       pageStart: null,
       pageEnd: null,
+      sourceFileName: null,
+      sourceFilePathname: null,
+      sourceFileHash: null,
+      verdict: null,
+      confirmedNew: false,
       lines: [{ ...emptyLine }],
     }
   }
@@ -224,6 +313,49 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     })
   }
 
+  // Advance to the next un-actioned document, or show the batch summary once
+  // every document has been imported, skipped, or flagged as already imported.
+  function advanceOrFinish(doneIndex: number, thisOutcome: BatchOutcome) {
+    setOutcomes((prev) => [...prev, thisOutcome])
+    const nextSaved = saved.map((s, i) => (i === doneIndex ? true : s))
+    setSaved(nextSaved)
+    const nextIndex = nextSaved.findIndex(
+      (s, i) => !s && drafts[i]?.verdict?.status !== "already_imported",
+    )
+    if (nextIndex === -1) {
+      setStep("summary")
+    } else {
+      setError(null)
+      setPackages([])
+      setCurrent(nextIndex)
+    }
+  }
+
+  function outcomeBase(d: Draft, index: number) {
+    return {
+      label: documentLabel(d, index),
+      supplierName: d.newSupplierName.trim() || "Unknown supplier",
+      invoiceNumber: d.invoiceNumber.trim() || null,
+      transactionType: d.transactionType,
+      net: d.net ? parseFloat(d.net) : 0,
+      gross: d.gross ? parseFloat(d.gross) : null,
+      priceLines: d.lines.filter((l) => l.description.trim() && l.trackAsProduct && l.unitPriceExVat).length,
+    }
+  }
+
+  // Skip a document without importing it (used for possible/confirmed duplicates
+  // the user decides not to import).
+  function skipCurrent() {
+    if (!draft) return
+    const isDupe = draft.verdict?.status === "already_imported"
+    advanceOrFinish(current, {
+      ...outcomeBase(draft, current),
+      result: isDupe ? "duplicate" : "skipped",
+      reason: draft.verdict?.reason ?? null,
+      existing: draft.verdict?.existing ?? null,
+    })
+  }
+
   function commit() {
     if (!draft) return
     setError(null)
@@ -247,38 +379,52 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         newProductCategory: l.productCategory.trim() || null,
       }))
 
+    const capturedIndex = current
+    const capturedDraft = draft
+
     startSaving(async () => {
       try {
-        await commitInvoice({
-          supplierId: draft.supplierId ? Number(draft.supplierId) : null,
-          newSupplierName: draft.supplierId ? null : draft.newSupplierName.trim(),
-          projectId: draft.projectId ? Number(draft.projectId) : null,
-          invoiceNumber: draft.invoiceNumber.trim() || null,
-          invoiceDate: draft.invoiceDate || null,
-          transactionType: draft.transactionType,
-          net: parseFloat(draft.net) || 0,
-          vat: parseFloat(draft.vat) || 0,
-          gross: parseFloat(draft.gross) || 0,
-          sourceFileName: fileName,
-          sourceFilePathname: sourcePathname,
-          sourcePageStart: draft.pageStart,
-          sourcePageEnd: draft.pageEnd,
-          notes: draft.notes.trim() || null,
+        const result = await commitInvoice({
+          supplierId: capturedDraft.supplierId ? Number(capturedDraft.supplierId) : null,
+          newSupplierName: capturedDraft.supplierId ? null : capturedDraft.newSupplierName.trim(),
+          projectId: capturedDraft.projectId ? Number(capturedDraft.projectId) : null,
+          invoiceNumber: capturedDraft.invoiceNumber.trim() || null,
+          invoiceDate: capturedDraft.invoiceDate || null,
+          transactionType: capturedDraft.transactionType,
+          net: parseFloat(capturedDraft.net) || 0,
+          vat: parseFloat(capturedDraft.vat) || 0,
+          gross: parseFloat(capturedDraft.gross) || 0,
+          sourceFileName: capturedDraft.sourceFileName,
+          sourceFilePathname: capturedDraft.sourceFilePathname,
+          sourceFileHash: capturedDraft.sourceFileHash,
+          sourcePageStart: capturedDraft.pageStart,
+          sourcePageEnd: capturedDraft.pageEnd,
+          notes: capturedDraft.notes.trim() || null,
           lineItems: payloadLines,
         })
 
-        const nextSaved = saved.map((s, i) => (i === current ? true : s))
-        setSaved(nextSaved)
+        const base = outcomeBase(capturedDraft, capturedIndex)
 
-        // Move to the next document that still needs saving, if any.
-        const nextIndex = nextSaved.findIndex((s) => !s)
-        if (nextIndex === -1) {
-          router.push("/invoices")
-          router.refresh()
+        if (result.status === "duplicate") {
+          // The server refused to double-import. Nothing was written; record it
+          // as a duplicate and mark the draft so the review UI reflects reality.
+          const reason = "Confirmed on save — this document is already in the system."
+          setDrafts((prev) =>
+            prev.map((d, i) =>
+              i === capturedIndex
+                ? { ...d, verdict: { status: "already_imported", existing: result.existing, reason } }
+                : d,
+            ),
+          )
+          advanceOrFinish(capturedIndex, {
+            ...base,
+            priceLines: 0,
+            result: "duplicate",
+            reason,
+            existing: result.existing,
+          })
         } else {
-          setError(null)
-          setPackages([])
-          setCurrent(nextIndex)
+          advanceOrFinish(capturedIndex, { ...base, result: "imported", reason: null, existing: null })
         }
       } catch (e) {
         setError((e as Error).message || "Something went wrong while saving.")
@@ -292,26 +438,37 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     setCurrent(index)
   }
 
+  function resetToUpload() {
+    setStep("upload")
+    setError(null)
+    setPackages([])
+    setDrafts([])
+    setSaved([])
+    setOutcomes([])
+    setFileProgress([])
+    setCurrent(0)
+  }
+
   if (step === "upload") {
     return (
       <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-10">
-        <UploadDropzone onFile={handleFile} extracting={extracting} fileName={fileName} />
+        <UploadDropzone onFiles={handleFiles} />
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-5">
           <h2 className="text-sm font-semibold text-foreground">How this works</h2>
           <ol className="flex flex-col gap-1.5 text-sm text-muted-foreground">
-            <li>1. Upload a file (PDF or image). It can contain more than one invoice or credit note.</li>
-            <li>2. We keep the original document and read the supplier, totals and line items automatically.</li>
-            <li>3. Review each detected document, assign a project and cost packages.</li>
-            <li>4. Confirm — spend, price history and supplier records update instantly.</li>
+            <li>1. Upload one or more files (PDF or image). Each file can contain several invoices or credit notes.</li>
+            <li>2. We keep every original document and read the supplier, totals and line items automatically.</li>
+            <li>3. We flag anything that looks like it&apos;s already in the system so nothing is double-counted.</li>
+            <li>4. Review each detected document, assign a project and cost packages, then confirm.</li>
           </ol>
         </div>
         <button
           type="button"
           onClick={() => {
-            setSourcePathname(null)
             setDrafts([blankDraft()])
             setSaved([false])
+            setOutcomes([])
             setCurrent(0)
             setStep("review")
           }}
@@ -323,7 +480,33 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     )
   }
 
+  if (step === "reading") {
+    return (
+      <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-10">
+        <BatchProgress files={fileProgress} processed={processedCount} />
+      </div>
+    )
+  }
+
+  if (step === "summary") {
+    return (
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-8 py-8">
+        <BatchSummary
+          data={buildSummaryData(outcomes, fileProgress)}
+          onDone={() => {
+            router.push("/invoices")
+            router.refresh()
+          }}
+          onUploadMore={resetToUpload}
+        />
+      </div>
+    )
+  }
+
   if (!draft) return null
+
+  const verdict = draft.verdict
+  const isAlreadyImported = verdict?.status === "already_imported"
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-6 px-8 py-8">
@@ -333,11 +516,15 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         </div>
       ) : null}
 
-      {fileName ? (
+      {draft.sourceFileName ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <FileText className="h-4 w-4" strokeWidth={1.75} />
-          {fileName}
-          {extracting ? <StatusBadge variant="info">Reading…</StatusBadge> : null}
+          {draft.sourceFileName}
+          {draft.pageStart ? (
+            <span className="text-xs">
+              · {draft.pageStart === draft.pageEnd ? `page ${draft.pageStart}` : `pages ${draft.pageStart}–${draft.pageEnd}`}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
@@ -345,7 +532,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         <div className="flex flex-col gap-3 rounded-lg border border-info/30 bg-info-bg px-4 py-3.5">
           <div className="flex items-center justify-between gap-3">
             <p className="text-sm font-medium text-foreground">
-              {total} documents detected in this file — {savedCount} of {total} saved
+              {total} documents detected — {savedCount} of {total} actioned
             </p>
             <span className="text-xs font-medium text-muted-foreground">
               Reviewing {current + 1} of {total}
@@ -355,6 +542,8 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
             {drafts.map((d, i) => {
               const isCurrent = i === current
               const isSaved = saved[i]
+              const v = d.verdict?.status
+              const dupePending = !isSaved && (v === "already_imported" || v === "possible_duplicate")
               return (
                 <button
                   key={i}
@@ -366,13 +555,13 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
                       ? "border-primary bg-primary text-primary-foreground"
                       : isSaved
                         ? "border-success/40 bg-success-bg text-success"
-                        : "border-border bg-card text-foreground hover:bg-muted",
+                        : dupePending
+                          ? "border-warning/40 bg-warning-bg text-warning"
+                          : "border-border bg-card text-foreground hover:bg-muted",
                   )}
                 >
                   {isSaved ? <Check className="h-3.5 w-3.5" strokeWidth={2.5} /> : null}
-                  {d.invoiceNumber?.trim() ||
-                    d.newSupplierName?.trim() ||
-                    `Document ${i + 1}`}
+                  {documentLabel(d, i)}
                 </button>
               )
             })}
@@ -380,10 +569,18 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         </div>
       ) : null}
 
-      {draft && saved[current] ? (
+      {verdict && verdict.status !== "new" && !saved[current] ? (
+        <DuplicateNotice
+          verdict={verdict}
+          confirmedNew={draft.confirmedNew}
+          onConfirmChange={(v) => setDraft({ ...draft, confirmedNew: v })}
+        />
+      ) : null}
+
+      {saved[current] ? (
         <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm text-success">
           <Check className="h-4 w-4" strokeWidth={2.5} />
-          This document has already been saved.
+          This document has been actioned.
         </div>
       ) : null}
 
@@ -611,33 +808,50 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         </MiniField>
       </section>
 
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <span className="text-sm text-muted-foreground">
           {draft.gross ? `Total ${formatGBP(parseFloat(draft.gross) || 0, { decimals: true })}` : ""}
         </span>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => router.push("/invoices")}
+            onClick={() => (total > 1 ? setStep("summary") : router.push("/invoices"))}
             className="rounded-lg border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground hover:bg-muted"
           >
             Cancel
           </button>
+          {total > 1 && !saved[current] ? (
+            <button
+              type="button"
+              onClick={skipCurrent}
+              disabled={saving}
+              className="rounded-lg border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground hover:bg-muted disabled:opacity-60"
+            >
+              {isAlreadyImported ? "Skip (already imported)" : "Skip this document"}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={commit}
             disabled={saving}
-            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-60"
+            className={cn(
+              "flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold disabled:opacity-60",
+              verdict && verdict.status !== "new"
+                ? "bg-warning text-warning-foreground hover:opacity-90"
+                : "bg-primary text-primary-foreground hover:opacity-90",
+            )}
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} /> : null}
             {saved[current]
               ? "Save again"
-              : savedCount + 1 < total
-                ? "Save & next document"
-                : total > 1
-                  ? "Save last document"
-                  : "Confirm & save"}
-            {!saving && !saved[current] && savedCount + 1 < total ? (
+              : verdict && verdict.status !== "new"
+                ? "Import anyway"
+                : savedCount + 1 < total
+                  ? "Save & next document"
+                  : total > 1
+                    ? "Save last document"
+                    : "Confirm & save"}
+            {!saving && !saved[current] && !(verdict && verdict.status !== "new") && savedCount + 1 < total ? (
               <ChevronRight className="h-4 w-4" strokeWidth={2} />
             ) : null}
           </button>
@@ -647,15 +861,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   )
 }
 
-function UploadDropzone({
-  onFile,
-  extracting,
-  fileName,
-}: {
-  onFile: (f: File) => void
-  extracting: boolean
-  fileName: string | null
-}) {
+function UploadDropzone({ onFiles }: { onFiles: (files: File[]) => void }) {
   const [dragging, setDragging] = useState(false)
   return (
     <label
@@ -667,8 +873,8 @@ function UploadDropzone({
       onDrop={(e) => {
         e.preventDefault()
         setDragging(false)
-        const f = e.dataTransfer.files?.[0]
-        if (f) onFile(f)
+        const files = Array.from(e.dataTransfer.files ?? [])
+        if (files.length) onFiles(files)
       }}
       className={cn(
         "flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed px-6 py-14 text-center transition-colors",
@@ -678,24 +884,24 @@ function UploadDropzone({
       <input
         type="file"
         accept="application/pdf,image/*"
+        multiple
         className="sr-only"
         onChange={(e) => {
-          const f = e.target.files?.[0]
-          if (f) onFile(f)
+          const files = Array.from(e.target.files ?? [])
+          if (files.length) onFiles(files)
+          e.target.value = ""
         }}
       />
       <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-        {extracting ? (
-          <Loader2 className="h-6 w-6 animate-spin" strokeWidth={1.75} />
-        ) : (
-          <Upload className="h-6 w-6" strokeWidth={1.75} />
-        )}
+        <Upload className="h-6 w-6" strokeWidth={1.75} />
       </div>
       <div className="flex flex-col gap-1">
         <span className="text-sm font-semibold text-foreground">
-          {extracting ? `Reading ${fileName}…` : "Drop an invoice here or tap to browse"}
+          Drop invoices here or tap to browse
         </span>
-        <span className="text-xs text-muted-foreground">PDF or image · supplier invoices and credit notes</span>
+        <span className="text-xs text-muted-foreground">
+          One or more PDFs or images · each file may contain several documents
+        </span>
       </div>
     </label>
   )
@@ -704,6 +910,56 @@ function UploadDropzone({
 const inputCls =
   "h-11 w-full rounded-lg border border-border bg-background px-3 text-base text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30 sm:h-9 sm:text-sm"
 const selectCls = inputCls
+
+function documentLabel(d: Draft, index: number): string {
+  const num = d.invoiceNumber?.trim()
+  const sup = d.newSupplierName?.trim()
+  if (num && sup) return `${sup} · ${num}`
+  return num || sup || `Document ${index + 1}`
+}
+
+function buildSummaryData(outcomes: BatchOutcome[], files: FileProgress[]): BatchSummaryData {
+  const suppliers = new Set<string>()
+  let invoicesAdded = 0
+  let creditsAdded = 0
+  let duplicatesSkipped = 0
+  let otherSkipped = 0
+  let totalNetAdded = 0
+  let priceRecordsCreated = 0
+  const needingAttention: { label: string; reason: string }[] = []
+
+  for (const o of outcomes) {
+    if (o.result === "imported") {
+      if (o.transactionType === "credit") creditsAdded++
+      else invoicesAdded++
+      totalNetAdded += o.net
+      priceRecordsCreated += o.priceLines
+      suppliers.add(o.supplierName)
+    } else if (o.result === "duplicate") {
+      duplicatesSkipped++
+      needingAttention.push({
+        label: o.label,
+        reason: o.reason ?? "Already imported — not counted again.",
+      })
+    } else if (o.result === "skipped") {
+      otherSkipped++
+    }
+  }
+
+  return {
+    sourceFileCount: files.length,
+    documentsDetected: outcomes.length,
+    invoicesAdded,
+    creditsAdded,
+    duplicatesSkipped,
+    otherSkipped,
+    failed: files.filter((f) => f.status === "failed").length,
+    totalNetAdded,
+    suppliersAffected: [...suppliers],
+    priceRecordsCreated,
+    needingAttention,
+  }
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (

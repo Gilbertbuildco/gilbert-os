@@ -64,6 +64,10 @@ export const invoices = pgTable("invoices", {
   status: text("status").notNull().default("confirmed"),
   sourceFileName: text("source_file_name"),
   sourceFilePathname: text("source_file_pathname"),
+  // SHA-256 checksum of the original uploaded file. Used only as a secondary
+  // duplicate signal — never as the sole identity (the same invoice may be
+  // rescanned or re-combined into a different PDF, changing the hash).
+  sourceFileHash: text("source_file_hash"),
   // 1-based inclusive page range this invoice occupies within its source file.
   // Null means "unknown" (fall back to showing the whole document).
   sourcePageStart: integer("source_page_start"),

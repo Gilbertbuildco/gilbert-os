@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { generateObject } from "ai"
 import { z } from "zod"
 import { put } from "@vercel/blob"
@@ -58,8 +59,14 @@ const extractionSchema = z.object({
 export type ExtractedInvoice = z.infer<typeof documentSchema>
 
 export type ExtractionResult =
-  | { ok: true; documents: ExtractedInvoice[]; fileName: string; sourceFilePathname: string | null }
-  | { ok: false; error: string }
+  | {
+      ok: true
+      documents: ExtractedInvoice[]
+      fileName: string
+      sourceFilePathname: string | null
+      sourceFileHash: string | null
+    }
+  | { ok: false; error: string; fileName: string }
 
 /**
  * Read an uploaded PDF/image, retain the original in Blob storage, and extract
@@ -69,6 +76,9 @@ export type ExtractionResult =
 export async function extractDocumentsFromFile(file: File): Promise<ExtractionResult> {
   const bytes = new Uint8Array(await file.arrayBuffer())
   const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg")
+
+  // Checksum of the exact bytes uploaded — a secondary duplicate signal.
+  const sourceFileHash = createHash("sha256").update(Buffer.from(bytes)).digest("hex")
 
   // Retain the original document in Blob storage before extraction so the
   // source is always kept, even if the review is abandoned partway.
@@ -121,9 +131,10 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
           return {
             ok: false,
             error: "No invoice could be read from that file. You can still enter the details manually below.",
+            fileName: file.name,
           }
         }
-        return { ok: true, documents, fileName: file.name, sourceFilePathname }
+        return { ok: true, documents, fileName: file.name, sourceFilePathname, sourceFileHash }
       } catch (err) {
         const message = (err as Error).message ?? ""
         lastError = message
@@ -147,5 +158,6 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
     error: rateLimited
       ? "Automatic reading is temporarily rate-limited. Please wait a moment and try again, or enter the details manually below."
       : "Could not read that document automatically. You can still enter the details manually below.",
+    fileName: file.name,
   }
 }

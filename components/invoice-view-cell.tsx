@@ -16,6 +16,7 @@ export interface InvoiceViewCellProps {
   supplierName: string
   pageStart: number | null
   pageEnd: number | null
+  label?: string
 }
 
 export function InvoiceViewCell({
@@ -24,6 +25,7 @@ export function InvoiceViewCell({
   supplierName,
   pageStart,
   pageEnd,
+  label = "View invoice",
 }: InvoiceViewCellProps) {
   const [open, setOpen] = useState(false)
 
@@ -39,7 +41,7 @@ export function InvoiceViewCell({
         className="inline-flex min-h-11 items-center gap-1.5 text-primary transition-opacity hover:underline"
       >
         <FileText className="h-4 w-4" strokeWidth={1.75} />
-        View invoice
+        {label}
       </button>
       {open ? (
         <InvoiceDocumentViewer

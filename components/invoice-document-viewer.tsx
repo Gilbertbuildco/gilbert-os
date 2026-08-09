@@ -63,10 +63,42 @@ export function InvoiceDocumentViewer({
   const currentPage = pages[index]
   const hasMultiplePages = pages.length > 1
 
+  // Intercept the device/browser Back button so it dismisses the viewer and
+  // returns the user to exactly where they came from (e.g. the invoices list),
+  // instead of navigating away to the previous page. We push a throwaway
+  // history entry on open; a `popstate` (Back) then just closes the overlay.
+  // Header Close/Back and Escape unwind the same entry via history.back() so
+  // history never accumulates orphaned states.
+  const closingRef = useRef(false)
+  const requestClose = useCallback(() => {
+    if (closingRef.current) return
+    closingRef.current = true
+    // If we pushed a state, step back over it; the popstate handler is a no-op
+    // once closingRef is set, and React unmounts us via onClose.
+    if (typeof window !== "undefined" && window.history.state?.invoiceViewer) {
+      window.history.back()
+    }
+    onClose()
+  }, [onClose])
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    window.history.pushState({ invoiceViewer: true }, "")
+    const onPop = () => {
+      // Back was pressed while the viewer is open: close it (we're already
+      // back on the underlying page) without navigating further.
+      closingRef.current = true
+      onClose()
+    }
+    window.addEventListener("popstate", onPop)
+    return () => window.removeEventListener("popstate", onPop)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Close on Escape and lock background scroll while the overlay is open.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
+      if (e.key === "Escape") requestClose()
       if (e.key === "ArrowRight") setIndex((i) => Math.min(i + 1, pages.length - 1))
       if (e.key === "ArrowLeft") setIndex((i) => Math.max(i - 1, 0))
     }
@@ -77,7 +109,7 @@ export function InvoiceDocumentViewer({
       document.removeEventListener("keydown", onKey)
       document.body.style.overflow = prevOverflow
     }
-  }, [onClose, pages.length])
+  }, [requestClose, pages.length])
 
   // Track the available width so pages scale to fit on phones and tablets.
   useEffect(() => {
@@ -112,7 +144,7 @@ export function InvoiceDocumentViewer({
       <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-card px-3 py-2.5 sm:px-5">
         <button
           type="button"
-          onClick={onClose}
+          onClick={requestClose}
           className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" strokeWidth={2} />
@@ -129,7 +161,7 @@ export function InvoiceDocumentViewer({
 
         <button
           type="button"
-          onClick={onClose}
+          onClick={requestClose}
           aria-label="Close"
           className="inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >

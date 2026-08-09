@@ -37,6 +37,10 @@ const documentSchema = z.object({
     .describe(
       "1-based number of the LAST page of the source file this document appears on. Equal to pageStart for a single-page document.",
     ),
+  confidence: z
+    .enum(["high", "medium", "low"])
+    .nullable()
+    .describe("Your overall confidence that this document was read correctly and completely"),
   lineItems: z.array(lineItemSchema),
   totals: z.object({
     net: z.number().describe("Total net (excluding VAT)"),

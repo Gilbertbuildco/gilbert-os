@@ -5,6 +5,8 @@ import {
   numeric,
   date,
   timestamp,
+  boolean,
+  jsonb,
   pgTable,
 } from "drizzle-orm/pg-core"
 
@@ -40,6 +42,15 @@ export const products = pgTable("products", {
   category: text("category"),
   manufacturer: text("manufacturer"),
   unit: text("unit"),
+  // Structured normalisation of the merchant description. Populated best-effort
+  // by the enrichment pass so differently-worded descriptions for the same
+  // physical product can later be recognised and price-compared across merchants.
+  normalisedName: text("normalised_name"),
+  productFamily: text("product_family"),
+  productType: text("product_type"),
+  dimensions: text("dimensions"),
+  thickness: text("thickness"),
+  subcategory: text("subcategory"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -73,6 +84,18 @@ export const invoices = pgTable("invoices", {
   sourcePageStart: integer("source_page_start"),
   sourcePageEnd: integer("source_page_end"),
   notes: text("notes"),
+  // Audit-grade fields. `extractionRaw` retains the original AI extraction for
+  // this document so a manually-corrected value can always be compared against
+  // what the model first read. `confidence` is the model's self-reported
+  // extraction confidence (high/medium/low). `reconciled` records whether the
+  // line/total arithmetic checked out; `needsReview` is set when it did not or
+  // when required fields were missing at commit time.
+  extractionRaw: jsonb("extraction_raw"),
+  confidence: text("confidence"),
+  // For a credit note, the invoice it relates to where that link is confident.
+  creditOfInvoiceId: integer("credit_of_invoice_id"),
+  needsReview: boolean("needs_review").notNull().default(false),
+  reconciled: boolean("reconciled").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -90,14 +113,26 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   invoiceId: integer("invoice_id").notNull(),
   productId: integer("product_id"),
   costPackageId: integer("cost_package_id"),
+  // `description` is the exact merchant text (immutable audit reference).
+  // `rawDescription` mirrors it explicitly for clarity; the normalised identity
+  // lives on the linked product row.
   description: text("description").notNull(),
+  rawDescription: text("raw_description"),
   quantity: numeric("quantity"),
+  // `unit` keeps the exact raw merchant unit (e.g. "SH"); `normalisedUnit` is
+  // the Gilbert OS canonical unit (e.g. "sheet"). Normalisation NEVER changes
+  // quantity, unit price or any financial total.
   unit: text("unit"),
+  rawUnit: text("raw_unit"),
+  normalisedUnit: text("normalised_unit"),
   unitPriceExVat: numeric("unit_price_ex_vat"),
   lineNet: numeric("line_net").notNull().default("0"),
   lineVat: numeric("line_vat").notNull().default("0"),
   lineGross: numeric("line_gross").notNull().default("0"),
   vatRate: numeric("vat_rate"),
+  // Whether this line was added to the procurement price database. Delivery,
+  // carriage, discounts, labour etc. are excluded so the pricing DB stays clean.
+  isPriceTracked: boolean("is_price_tracked").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -113,10 +148,48 @@ export const priceRecords = pgTable("price_records", {
   priceIncVat: numeric("price_inc_vat"),
   vatRate: numeric("vat_rate"),
   unit: text("unit"),
+  normalisedUnit: text("normalised_unit"),
   invoiceDate: date("invoice_date"),
   invoiceNumber: text("invoice_number"),
   transactionType: text("transaction_type").notNull().default("invoice"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Learned supplier aliases. When a new invoice heading resolves (by fuzzy
+ * match) to an existing supplier, the normalised heading is recorded here so
+ * the same heading is matched instantly next time and Gilbert OS never creates
+ * near-duplicate supplier records from cosmetic name differences.
+ */
+export const supplierAliases = pgTable("supplier_aliases", {
+  id: serial("id").primaryKey(),
+  supplierId: integer("supplier_id").notNull(),
+  normalisedName: text("normalised_name").notNull(),
+  rawName: text("raw_name"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Learned classification mappings — the memory that makes review-by-exception
+ * get easier over time. When a user confirms that a product / normalised
+ * description / supplier SKU belongs to a given cost package (stored by package
+ * CODE + NAME so it reapplies across projects), category, unit and price-track
+ * decision, it is recorded here and reused on the next matching line.
+ */
+export const classificationMappings = pgTable("classification_mappings", {
+  id: serial("id").primaryKey(),
+  keyKind: text("key_kind").notNull(), // 'product' | 'description' | 'sku'
+  keyValue: text("key_value").notNull(), // normalised key
+  supplierId: integer("supplier_id"),
+  productId: integer("product_id"),
+  costPackageCode: text("cost_package_code"),
+  costPackageName: text("cost_package_name"),
+  category: text("category"),
+  normalisedUnit: text("normalised_unit"),
+  trackAsProduct: boolean("track_as_product"),
+  timesConfirmed: integer("times_confirmed").notNull().default(1),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
 export const variations = pgTable("variations", {
@@ -137,3 +210,5 @@ export type CostPackage = typeof costPackages.$inferSelect
 export type InvoiceLineItem = typeof invoiceLineItems.$inferSelect
 export type PriceRecord = typeof priceRecords.$inferSelect
 export type Variation = typeof variations.$inferSelect
+export type SupplierAlias = typeof supplierAliases.$inferSelect
+export type ClassificationMapping = typeof classificationMappings.$inferSelect

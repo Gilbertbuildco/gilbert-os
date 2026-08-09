@@ -10,6 +10,7 @@ import type { DuplicateVerdict } from "@/lib/duplicate-detection"
 import { enrichLineItems, suggestCostPackages } from "@/lib/invoice-enrichment"
 import {
   normaliseProductName,
+  normaliseDescriptionKey,
   parseDimensions,
   parseThickness,
   suggestTrackPrice,
@@ -260,13 +261,15 @@ export async function prepareBatch(docs: PrepareDocInput[]): Promise<DocIntellig
     }
 
     // Learned-mapping recall — makes review progressively easier over time.
+    // Keyed by the SAME normalised description key the commit path writes, so a
+    // previously-confirmed line recalls its classification even when a later
+    // invoice words the description slightly differently.
     try {
-      const learned = await loadLearnedMappings(
-        baseLines.map((l) => l.normalisedName),
-        supplierMatch.supplierId,
-      )
-      for (const line of baseLines) {
-        const m = learned.get(line.normalisedName)
+      const descKeys = doc.lines.map((l) => normaliseDescriptionKey(l.description))
+      const learned = await loadLearnedMappings(descKeys, supplierMatch.supplierId)
+      for (let i = 0; i < baseLines.length; i++) {
+        const line = baseLines[i]
+        const m = learned.get(descKeys[i])
         if (!m) continue
         line.fromMemory = true
         line.learnedPackageCode = m.costPackageCode
@@ -315,8 +318,10 @@ export type LineForSuggestion = {
   category: string | null
   productType: string | null
   normalisedName: string
-  /** Cost-package code recalled from a learned mapping, if any. */
+  /** Cost-package code recalled from a learned product mapping, if any. */
   learnedPackageCode: string | null
+  /** Cost-package name recalled from a learned product mapping, if any. */
+  learnedPackageName?: string | null
 }
 
 export type ResolvedPackage = {
@@ -345,6 +350,22 @@ export async function suggestPackagesForProject(
     byName.set(p.name.trim().toLowerCase(), p)
   }
 
+  // Resolve a remembered/suggested package (by code OR exact name) against THIS
+  // project's cost plan. Codes may be null on some plans, so the name is a vital
+  // fallback and keeps learning working across projects that share a plan
+  // structure but not identical codes.
+  const resolvePkg = (code: string | null | undefined, name: string | null | undefined) => {
+    if (code) {
+      const p = byCode.get(code.trim().toLowerCase())
+      if (p) return p
+    }
+    if (name) {
+      const p = byName.get(name.trim().toLowerCase())
+      if (p) return p
+    }
+    return undefined
+  }
+
   const results: ResolvedPackage[] = lines.map(() => ({
     packageId: null,
     packageCode: null,
@@ -352,32 +373,76 @@ export async function suggestPackagesForProject(
     confidence: "none",
     fromMemory: false,
   }))
+  const setResult = (
+    i: number,
+    p: (typeof packages)[number],
+    confidence: ResolvedPackage["confidence"],
+    fromMemory: boolean,
+  ) => {
+    results[i] = { packageId: p.id, packageCode: p.code, packageName: p.name, confidence, fromMemory }
+  }
 
-  // 1) Apply learned mappings by resolving the remembered code/name to THIS
-  //    project's cost plan.
-  const needsAi: number[] = []
+  if (packages.length === 0) return results
+
+  // Tier 1 — learned PRODUCT → package mapping (strongest: a human previously
+  // confirmed this exact product's package).
+  let unresolved: number[] = []
   for (let i = 0; i < lines.length; i++) {
-    const learnedCode = lines[i].learnedPackageCode
-    const resolved =
-      (learnedCode ? byCode.get(learnedCode.trim().toLowerCase()) : undefined) ?? undefined
-    if (resolved) {
-      results[i] = {
-        packageId: resolved.id,
-        packageCode: resolved.code,
-        packageName: resolved.name,
-        confidence: "high",
-        fromMemory: true,
+    const p = resolvePkg(lines[i].learnedPackageCode, lines[i].learnedPackageName)
+    if (p) setResult(i, p, "high", true)
+    else unresolved.push(i)
+  }
+
+  // Tier 2 — learned CATEGORY → package mapping (a human previously confirmed
+  // that this category of material belongs to this package).
+  if (unresolved.length > 0) {
+    try {
+      const catKeys = [
+        ...new Set(
+          unresolved
+            .map((i) => (lines[i].category ?? "").trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      ]
+      if (catKeys.length > 0) {
+        const catRows = await db
+          .select()
+          .from(classificationMappings)
+          .where(
+            and(
+              eq(classificationMappings.keyKind, "category"),
+              inArray(classificationMappings.keyValue, catKeys),
+            ),
+          )
+        // Most-confirmed mapping wins per category.
+        const byCat = new Map<string, (typeof catRows)[number]>()
+        for (const r of catRows) {
+          const cur = byCat.get(r.keyValue)
+          if (!cur || r.timesConfirmed > cur.timesConfirmed) byCat.set(r.keyValue, r)
+        }
+        const stillUnresolved: number[] = []
+        for (const i of unresolved) {
+          const cat = (lines[i].category ?? "").trim().toLowerCase()
+          const row = cat ? byCat.get(cat) : undefined
+          const p = row ? resolvePkg(row.costPackageCode, row.costPackageName) : undefined
+          // Category is a broad key, so preselect but keep it review-worthy.
+          if (p) setResult(i, p, "medium", true)
+          else stillUnresolved.push(i)
+        }
+        unresolved = stillUnresolved
       }
-    } else {
-      needsAi.push(i)
+    } catch (err) {
+      console.log("[v0] suggestPackagesForProject: category-mapping recall failed:", (err as Error).message)
     }
   }
 
-  if (packages.length === 0 || needsAi.length === 0) return results
+  if (unresolved.length === 0) return results
 
-  // 2) AI suggestion for the remainder.
+  // Tier 5 — AI reasoning over the project's existing plan for the remainder.
+  // (Tiers 3–4, supplier/product history and normalised product info, are
+  // folded in as the category/type hints the model reasons over.)
   try {
-    const aiLines = needsAi.map((i) => ({
+    const aiLines = unresolved.map((i) => ({
       description: lines[i].description,
       category: lines[i].category,
       productType: lines[i].productType,
@@ -387,18 +452,10 @@ export async function suggestPackagesForProject(
       packages.map((p) => ({ code: p.code, name: p.name })),
     )
     for (const s of suggestions) {
-      const lineIndex = needsAi[s.index]
-      if (lineIndex == null || !s.packageCode) continue
-      const resolved = byCode.get(s.packageCode.trim().toLowerCase())
-      if (resolved) {
-        results[lineIndex] = {
-          packageId: resolved.id,
-          packageCode: resolved.code,
-          packageName: resolved.name,
-          confidence: s.confidence,
-          fromMemory: false,
-        }
-      }
+      const lineIndex = unresolved[s.index]
+      if (lineIndex == null) continue
+      const resolved = resolvePkg(s.packageCode, s.packageName)
+      if (resolved) setResult(lineIndex, resolved, s.confidence, false)
     }
   } catch (err) {
     console.log("[v0] suggestPackagesForProject: AI suggestion failed:", (err as Error).message)

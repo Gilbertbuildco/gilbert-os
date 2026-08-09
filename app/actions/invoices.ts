@@ -333,32 +333,55 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
           })
         }
 
-        // Record the learned classification so the same line is pre-filled next
-        // time. Keyed by product id where known, else by normalised description.
-        if (li.costPackageCode || li.costPackageName || li.newProductCategory || li.normalisedUnit) {
-          const key = productId ? `p:${productId}` : normaliseDescriptionKey(li.description)
-          const keyKind = productId ? "product" : "description"
-          if (key) {
-            await tx.execute(sql`
-              INSERT INTO classification_mappings
-                (key_kind, key_value, supplier_id, product_id, cost_package_code,
-                 cost_package_name, category, normalised_unit, track_as_product, times_confirmed)
-              VALUES
-                (${keyKind}, ${key}, ${supplierId}, ${productId ?? null},
-                 ${li.costPackageCode ?? null}, ${li.costPackageName ?? null},
-                 ${li.newProductCategory ?? null}, ${li.normalisedUnit ?? null},
-                 ${li.trackAsProduct}, 1)
-              ON CONFLICT (key_kind, key_value, (coalesce(supplier_id, 0)))
-              DO UPDATE SET
-                cost_package_code = COALESCE(EXCLUDED.cost_package_code, classification_mappings.cost_package_code),
-                cost_package_name = COALESCE(EXCLUDED.cost_package_name, classification_mappings.cost_package_name),
-                category = COALESCE(EXCLUDED.category, classification_mappings.category),
-                normalised_unit = COALESCE(EXCLUDED.normalised_unit, classification_mappings.normalised_unit),
-                track_as_product = EXCLUDED.track_as_product,
-                times_confirmed = classification_mappings.times_confirmed + 1,
-                updated_at = now()
-            `)
-          }
+        // Learn this line's classification so the same (or a similarly-worded)
+        // product is pre-filled next time. Keyed by the NORMALISED DESCRIPTION
+        // — not the raw product id — so learning generalises across invoices
+        // that word the product differently, and matches the recall path in
+        // prepareBatch exactly. Scoped to this supplier (their wording is
+        // consistent); the category mapping below provides the cross-supplier
+        // generalisation.
+        const productKey = normaliseDescriptionKey(li.description)
+        if (productKey && (li.costPackageCode || li.costPackageName || li.newProductCategory || li.normalisedUnit)) {
+          await tx.execute(sql`
+            INSERT INTO classification_mappings
+              (key_kind, key_value, supplier_id, product_id, cost_package_code,
+               cost_package_name, category, normalised_unit, track_as_product, times_confirmed)
+            VALUES
+              ('product', ${productKey}, ${supplierId}, ${productId ?? null},
+               ${li.costPackageCode ?? null}, ${li.costPackageName ?? null},
+               ${li.newProductCategory ?? null}, ${li.normalisedUnit ?? null},
+               ${li.trackAsProduct}, 1)
+            ON CONFLICT (key_kind, key_value, (coalesce(supplier_id, 0)))
+            DO UPDATE SET
+              product_id = COALESCE(EXCLUDED.product_id, classification_mappings.product_id),
+              cost_package_code = COALESCE(EXCLUDED.cost_package_code, classification_mappings.cost_package_code),
+              cost_package_name = COALESCE(EXCLUDED.cost_package_name, classification_mappings.cost_package_name),
+              category = COALESCE(EXCLUDED.category, classification_mappings.category),
+              normalised_unit = COALESCE(EXCLUDED.normalised_unit, classification_mappings.normalised_unit),
+              track_as_product = EXCLUDED.track_as_product,
+              times_confirmed = classification_mappings.times_confirmed + 1,
+              updated_at = now()
+          `)
+        }
+
+        // Learn CATEGORY → package as a broader, supplier-independent fallback
+        // (stored globally, supplier_id NULL) so a never-seen product in a
+        // known category still lands in the right package on a future invoice.
+        const catKey = (li.newProductCategory ?? "").trim().toLowerCase()
+        if (catKey && (li.costPackageCode || li.costPackageName)) {
+          await tx.execute(sql`
+            INSERT INTO classification_mappings
+              (key_kind, key_value, supplier_id, cost_package_code, cost_package_name, category, times_confirmed)
+            VALUES
+              ('category', ${catKey}, NULL, ${li.costPackageCode ?? null},
+               ${li.costPackageName ?? null}, ${li.newProductCategory ?? null}, 1)
+            ON CONFLICT (key_kind, key_value, (coalesce(supplier_id, 0)))
+            DO UPDATE SET
+              cost_package_code = COALESCE(EXCLUDED.cost_package_code, classification_mappings.cost_package_code),
+              cost_package_name = COALESCE(EXCLUDED.cost_package_name, classification_mappings.cost_package_name),
+              times_confirmed = classification_mappings.times_confirmed + 1,
+              updated_at = now()
+          `)
         }
       }
 

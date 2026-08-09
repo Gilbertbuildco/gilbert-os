@@ -108,12 +108,21 @@ const packageSuggestionSchema = z.object({
         .string()
         .nullable()
         .describe("The CODE of the best-matching cost package from the provided list, or null if none is appropriate"),
+      packageName: z
+        .string()
+        .nullable()
+        .describe("The exact NAME of the same chosen cost package (copied verbatim from the list), or null"),
       confidence: z.enum(["high", "medium", "low"]).describe("How confident this mapping is"),
     }),
   ),
 })
 
-export type PackageSuggestion = { index: number; packageCode: string | null; confidence: "high" | "medium" | "low" }
+export type PackageSuggestion = {
+  index: number
+  packageCode: string | null
+  packageName: string | null
+  confidence: "high" | "medium" | "low"
+}
 
 export type PackageOptionForAI = { code: string | null; name: string }
 export type LineForPackaging = { description: string; category: string | null; productType: string | null }
@@ -131,9 +140,12 @@ export async function suggestCostPackages(
 
   const instructions =
     "You are mapping construction invoice lines to a project's existing cost plan. You may ONLY choose a cost " +
-    "package from the provided list, identified by its CODE. If no package is a sensible fit, return null for that " +
-    "line — never invent a package. Prefer the most specific appropriate package. Use the material category and " +
-    "product type as strong hints."
+    "package from the provided list — never invent a package. For each line return BOTH the chosen package's CODE " +
+    "and its exact NAME (copied verbatim from the list) so it can be resolved reliably. Always make your best " +
+    "attempt using the material category and product type as strong hints (e.g. an insulation board belongs to the " +
+    "package covering the element it insulates — walls, roof or floor). Use 'high' confidence for an obvious fit, " +
+    "'medium' when it is a reasonable best-guess among a few plausible packages, and 'low' when you are unsure. " +
+    "Only return null for both fields when genuinely no package could apply."
 
   const packageList = packages
     .map((p) => `- code: ${p.code ?? "(none)"} | name: ${p.name}`)

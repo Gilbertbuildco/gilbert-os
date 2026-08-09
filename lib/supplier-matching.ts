@@ -53,13 +53,27 @@ export function scoreSupplierMatch(extractedNormalised: string, candidateNormali
   const j = jaccard(a, b)
 
   // Containment: every token of the shorter name appears in the longer name.
+  // This captures legal/trading-suffix and branch variants such as
+  // "Travis Perkins" vs "Travis Perkins Trading Company" (legal suffixes are
+  // already stripped by normalisation; branch/location words are not).
   const [short, long] = a.length <= b.length ? [a, b] : [b, a]
   const longSet = new Set(long)
   const allContained = short.length > 0 && short.every((t) => longSet.has(t))
-  const containment = allContained ? short.length / long.length : 0
 
-  // Weight containment heavily — it captures legal/trading suffix variants.
-  return Math.max(j, 0.5 + 0.5 * containment * (allContained ? 1 : 0))
+  if (allContained) {
+    // The shorter name is a meaningful brand identifier when it has two or more
+    // tokens, or a single distinctive (>=4 char) token. Treat full containment
+    // of a meaningful brand as a strong match so genuine name variants
+    // auto-resolve to the same supplier — the whole point of "one real supplier
+    // = one record". Guard against a lone generic token producing false hits.
+    const meaningful = short.length >= 2 || short.some((t) => t.length >= 4)
+    if (meaningful) {
+      const ratio = short.length / long.length
+      return Math.max(j, 0.85 + 0.15 * ratio)
+    }
+  }
+
+  return j
 }
 
 /**

@@ -65,6 +65,8 @@ interface DraftLine {
   suggestedPackageId?: string
   suggestConfidence?: "high" | "medium" | "low" | "none"
   packageFromMemory?: boolean
+  /** true once the user has explicitly chosen or accepted a cost package. */
+  packageConfirmed?: boolean
 }
 
 interface Draft {
@@ -404,6 +406,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           productType: l.productType ?? null,
           normalisedName: l.normalisedName ?? l.description,
           learnedPackageCode: l.learnedPackageCode ?? null,
+          learnedPackageName: l.learnedPackageName ?? null,
         })),
       )
       setDrafts((prev) =>
@@ -414,15 +417,20 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
             lines: doc.lines.map((line, li) => {
               const r = resolved[li]
               if (!r || r.packageId == null) return line
+              // Preselect both high- and medium-confidence suggestions (the user
+              // is reviewing exceptions, not classifying from scratch); leave
+              // low/none unassigned so they surface as "needs review". Never
+              // override a package the user already chose.
+              const autoApply =
+                !line.costPackageId &&
+                !line.packageConfirmed &&
+                (r.confidence === "high" || r.confidence === "medium")
               return {
                 ...line,
                 suggestedPackageId: String(r.packageId),
                 suggestConfidence: r.confidence,
                 packageFromMemory: r.fromMemory || line.packageFromMemory,
-                // Auto-apply a confident suggestion when the user hasn't chosen.
-                costPackageId:
-                  line.costPackageId ||
-                  (r.confidence === "high" ? String(r.packageId) : line.costPackageId),
+                costPackageId: autoApply ? String(r.packageId) : line.costPackageId,
               }
             }),
           }
@@ -1074,7 +1082,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
                 <MiniField label="Cost package">
                   <select
                     value={line.costPackageId}
-                    onChange={(e) => updateLine(i, { costPackageId: e.target.value })}
+                    onChange={(e) => updateLine(i, { costPackageId: e.target.value, packageConfirmed: true })}
                     disabled={packages.length === 0}
                     className={selectCls}
                   >
@@ -1088,22 +1096,15 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
                       </option>
                     ))}
                   </select>
-                  {/* Suggest an unapplied package the reviewer can accept. */}
-                  {!line.costPackageId &&
-                  line.suggestedPackageId &&
-                  packages.some((p) => String(p.id) === line.suggestedPackageId) ? (
-                    <button
-                      type="button"
-                      onClick={() => updateLine(i, { costPackageId: line.suggestedPackageId! })}
-                      className="mt-1 text-left text-[11px] font-medium text-primary hover:underline"
-                    >
-                      Suggest:{" "}
-                      {packages.find((p) => String(p.id) === line.suggestedPackageId)?.name}
-                      {line.suggestConfidence && line.suggestConfidence !== "high"
-                        ? ` (${line.suggestConfidence})`
-                        : ""}
-                    </button>
-                  ) : null}
+                  <CostPackageHint
+                    line={line}
+                    hasPackages={packages.length > 0}
+                    onConfirm={() => updateLine(i, { packageConfirmed: true })}
+                    onAccept={() =>
+                      line.suggestedPackageId &&
+                      updateLine(i, { costPackageId: line.suggestedPackageId, packageConfirmed: true })
+                    }
+                  />
                 </MiniField>
                 <MiniField label="Category">
                   <input
@@ -1419,6 +1420,67 @@ function LineTag({ children }: { children: React.ReactNode }) {
     <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
       {children}
     </span>
+  )
+}
+
+// Subtle per-line cost-package indicator. Keeps the grid clean: a confident
+// suggestion is a quiet muted note, a medium suggestion asks for a one-click
+// confirm, and an unresolved package is clearly flagged for review.
+function CostPackageHint({
+  line,
+  hasPackages,
+  onConfirm,
+  onAccept,
+}: {
+  line: DraftLine
+  hasPackages: boolean
+  onConfirm: () => void
+  onAccept: () => void
+}) {
+  if (!hasPackages) return null
+
+  if (line.costPackageId) {
+    if (line.packageConfirmed) return null
+    if (line.suggestConfidence === "medium") {
+      return (
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] font-medium text-warning">
+            {line.packageFromMemory ? "Remembered · confirm" : "Suggested · confirm"}
+          </span>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="text-[11px] font-medium text-primary hover:underline"
+          >
+            Looks right
+          </button>
+        </div>
+      )
+    }
+    if (line.suggestConfidence === "high" || line.packageFromMemory) {
+      return (
+        <span className="mt-1 block text-[11px] text-muted-foreground">
+          {line.packageFromMemory ? "Remembered · high confidence" : "Suggested · high confidence"}
+        </span>
+      )
+    }
+    return null
+  }
+
+  // Unassigned — flag for review, offering the best guess if we have one.
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <span className="text-[11px] font-medium text-warning">Cost package needs review</span>
+      {line.suggestedPackageId ? (
+        <button
+          type="button"
+          onClick={onAccept}
+          className="text-[11px] font-medium text-primary hover:underline"
+        >
+          Use best guess
+        </button>
+      ) : null}
+    </div>
   )
 }
 

@@ -1,321 +1,353 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useState, useTransition } from "react"
 import { Search, X, Boxes } from "lucide-react"
+import { DataTable, type Column } from "@/components/data-table"
+import { EmptyState } from "@/components/empty-state"
 import { StatusBadge } from "@/components/status-badge"
 import { cn, formatGBP } from "@/lib/utils"
-import { procurementSample, type ProcurementRow } from "@/lib/data"
+import { fetchPriceHistory } from "@/app/actions/lookups"
+import type { ProductPriceRow, PriceHistoryRow } from "@/lib/queries"
 
-const MERCHANTS = ["Bradfords", "Travis Perkins", "CRS", "MKM"] as const
-
-type PriceEntry = { merchant: string; price: number }
-
-function priceEntries(row: ProcurementRow): PriceEntry[] {
-  const entries: PriceEntry[] = []
-  if (row.bradfordsRevised ?? row.bradfordsCurrent)
-    entries.push({ merchant: "Bradfords", price: (row.bradfordsRevised ?? row.bradfordsCurrent)! })
-  if (row.travisRevised ?? row.travisCurrent)
-    entries.push({ merchant: "Travis Perkins", price: (row.travisRevised ?? row.travisCurrent)! })
-  if (row.crs) entries.push({ merchant: "CRS", price: row.crs })
-  if (row.mkm) entries.push({ merchant: "MKM", price: row.mkm })
-  return entries
+interface Props {
+  products: ProductPriceRow[]
 }
 
-function bestPrice(row: ProcurementRow) {
-  const entries = priceEntries(row)
-  if (entries.length === 0) return null
-  return entries.reduce((min, e) => (e.price < min.price ? e : min), entries[0])
+function formatDate(d: string) {
+  const date = new Date(d)
+  if (Number.isNaN(date.getTime())) return d
+  return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
 }
 
-function saving(row: ProcurementRow) {
-  const entries = priceEntries(row)
-  const best = bestPrice(row)
-  if (!best || entries.length < 2) return null
-  const highest = entries.reduce((max, e) => (e.price > max.price ? e : max), entries[0])
-  return highest.price - best.price
-}
+export function ProcurementView({ products }: Props) {
+  const [query, setQuery] = useState("")
+  const [category, setCategory] = useState("all")
+  const [selected, setSelected] = useState<ProductPriceRow | null>(null)
+  const [history, setHistory] = useState<PriceHistoryRow[]>([])
+  const [isPending, startTransition] = useTransition()
 
-const stages = ["All stages", ...Array.from(new Set(procurementSample.map((r) => r.buildStage)))]
+  const categories = useMemo(() => {
+    const set = new Set<string>()
+    products.forEach((p) => p.category && set.add(p.category))
+    return Array.from(set).sort()
+  }, [products])
 
-function money(v?: number) {
-  return v == null ? "—" : formatGBP(v, { decimals: true })
-}
-
-export function ProcurementView() {
-  const [search, setSearch] = useState("")
-  const [stage, setStage] = useState("All stages")
-  const [merchant, setMerchant] = useState("All merchants")
-  const [priced, setPriced] = useState("All")
-  const [selected, setSelected] = useState<ProcurementRow | null>(null)
-
-  const rows = useMemo(() => {
-    return procurementSample.filter((row) => {
-      if (stage !== "All stages" && row.buildStage !== stage) return false
-      if (search && !row.product.toLowerCase().includes(search.toLowerCase())) return false
-      const entries = priceEntries(row)
-      if (merchant !== "All merchants" && !entries.some((e) => e.merchant === merchant)) return false
-      if (priced === "Priced" && entries.length === 0) return false
-      if (priced === "Unpriced" && entries.length > 0) return false
-      return true
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return products.filter((p) => {
+      if (category !== "all" && p.category !== category) return false
+      if (!q) return true
+      return (
+        p.name.toLowerCase().includes(q) ||
+        (p.manufacturer?.toLowerCase().includes(q) ?? false) ||
+        (p.description?.toLowerCase().includes(q) ?? false)
+      )
     })
-  }, [search, stage, merchant, priced])
+  }, [products, query, category])
+
+  function openProduct(p: ProductPriceRow) {
+    setSelected(p)
+    setHistory([])
+    startTransition(async () => {
+      const rows = await fetchPriceHistory(p.id)
+      setHistory(rows)
+    })
+  }
+
+  const columns: Column<ProductPriceRow>[] = [
+    {
+      key: "name",
+      header: "Product",
+      render: (r) => (
+        <div className="flex flex-col">
+          <span className="font-medium text-foreground">{r.name}</span>
+          <span className="text-xs text-muted-foreground">
+            {[r.manufacturer, r.category].filter(Boolean).join(" · ") || "Uncategorised"}
+          </span>
+        </div>
+      ),
+    },
+    {
+      key: "suppliers",
+      header: "Merchants",
+      align: "center",
+      render: (r) =>
+        r.supplierCount > 0 ? (
+          <span className="tabular-nums">{r.supplierCount}</span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
+      key: "best",
+      header: "Best price",
+      align: "right",
+      render: (r) =>
+        r.minPrice != null ? (
+          <span className="font-medium tabular-nums text-success">
+            {formatGBP(r.minPrice, { decimals: true })}
+            {r.unit ? <span className="text-xs text-muted-foreground">/{r.unit}</span> : null}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
+      key: "spread",
+      header: "Range",
+      align: "right",
+      render: (r) =>
+        r.minPrice != null && r.maxPrice != null && r.maxPrice > r.minPrice ? (
+          <span className="text-xs tabular-nums text-muted-foreground">
+            up to {formatGBP(r.maxPrice, { decimals: true })}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
+      key: "latest",
+      header: "Latest",
+      align: "right",
+      render: (r) =>
+        r.latestPrice != null ? (
+          <div className="flex flex-col items-end">
+            <span className="tabular-nums">{formatGBP(r.latestPrice, { decimals: true })}</span>
+            {r.latestDate ? (
+              <span className="text-xs text-muted-foreground">{formatDate(r.latestDate)}</span>
+            ) : null}
+          </div>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
+      key: "records",
+      header: "Records",
+      align: "right",
+      render: (r) => <span className="tabular-nums text-muted-foreground">{r.recordCount}</span>,
+    },
+  ]
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* Filters */}
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="relative w-full max-w-xs">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" strokeWidth={1.75} />
+    <div className="flex flex-col gap-4 px-8 py-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative w-full sm:max-w-xs">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+            strokeWidth={1.75}
+          />
           <input
             type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search products…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search products or manufacturers"
             aria-label="Search products"
-            className="h-9 w-full rounded-md border border-border bg-card pl-9 pr-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring"
+            className="h-11 w-full rounded-lg border border-border bg-card pl-9 pr-3 text-base text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30 sm:h-9 sm:text-sm"
           />
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <FilterSelect label="Build stage" value={stage} onChange={setStage} options={stages} />
-          <FilterSelect
-            label="Merchant"
-            value={merchant}
-            onChange={setMerchant}
-            options={["All merchants", ...MERCHANTS]}
+        {categories.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            <FilterChip active={category === "all"} onClick={() => setCategory("all")}>
+              All
+            </FilterChip>
+            {categories.map((c) => (
+              <FilterChip key={c} active={category === c} onClick={() => setCategory(c)}>
+                {c}
+              </FilterChip>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      {products.length === 0 ? (
+        <EmptyState
+          icon={<Boxes className="h-5 w-5" strokeWidth={1.75} />}
+          title="No pricing captured yet"
+          description="Product prices build automatically from confirmed supplier invoices. Upload an invoice and mark line items as tracked products to start a price history across merchants."
+        />
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground">
+            {filtered.length} of {products.length} tracked products
+          </p>
+          <DataTable
+            columns={columns}
+            data={filtered}
+            getRowKey={(r) => String(r.id)}
+            onRowClick={openProduct}
+            caption="Product pricing across merchants"
+            emptyState={
+              <p className="text-center text-sm text-muted-foreground">
+                No products match your search.
+              </p>
+            }
           />
-          <FilterSelect
-            label="Priced"
-            value={priced}
-            onChange={setPriced}
-            options={["All", "Priced", "Unpriced"]}
-          />
-        </div>
-      </div>
+        </>
+      )}
 
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">
-          Showing {rows.length} of {procurementSample.length} sample products
-        </p>
-        <StatusBadge variant="warning">Sample data · full 211-product import pending</StatusBadge>
-      </div>
-
-      {/* Table */}
-      <div className="overflow-hidden rounded-lg border border-border bg-card">
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-border bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
-                <th scope="col" className="px-4 py-2.5 text-left font-semibold">Build Stage</th>
-                <th scope="col" className="px-4 py-2.5 text-left font-semibold">Product</th>
-                <th scope="col" className="px-4 py-2.5 text-left font-semibold">Unit</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Bradfords Cur.</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Bradfords Rev.</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Travis Cur.</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Travis Rev.</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">CRS</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">MKM</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Best Price</th>
-                <th scope="col" className="px-4 py-2.5 text-left font-semibold">Winning Merchant</th>
-                <th scope="col" className="px-4 py-2.5 text-right font-semibold">Saving</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 ? (
-                <tr>
-                  <td colSpan={12} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                    No products match the current filters.
-                  </td>
-                </tr>
-              ) : (
-                rows.map((row) => {
-                  const best = bestPrice(row)
-                  const save = saving(row)
-                  return (
-                    <tr
-                      key={row.id}
-                      onClick={() => setSelected(row)}
-                      className="cursor-pointer border-b border-border last:border-b-0 transition-colors hover:bg-muted/40"
-                    >
-                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{row.buildStage}</td>
-                      <td className="px-4 py-3 font-medium text-foreground">{row.product}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{row.unit}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{money(row.bradfordsCurrent)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{money(row.bradfordsRevised)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{money(row.travisCurrent)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{money(row.travisRevised)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{money(row.crs)}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">{money(row.mkm)}</td>
-                      <td className="px-4 py-3 text-right font-semibold text-foreground tabular-nums">
-                        {best ? formatGBP(best.price, { decimals: true }) : "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        {best ? (
-                          <StatusBadge variant="success">{best.merchant}</StatusBadge>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-right font-medium tabular-nums">
-                        {save != null && save > 0 ? (
-                          <span className="text-success">{formatGBP(save, { decimals: true })}</span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {selected ? <ProductDrawer row={selected} onClose={() => setSelected(null)} /> : null}
+      {selected ? (
+        <ProductDrawer
+          product={selected}
+          history={history}
+          loading={isPending}
+          onClose={() => setSelected(null)}
+        />
+      ) : null}
     </div>
   )
 }
 
-function FilterSelect({
-  label,
-  value,
-  onChange,
-  options,
+function FilterChip({
+  active,
+  onClick,
+  children,
 }: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  options: string[]
+  active: boolean
+  onClick: () => void
+  children: React.ReactNode
 }) {
   return (
-    <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-      <span className="sr-only sm:not-sr-only">{label}</span>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label={label}
-        className="h-9 rounded-md border border-border bg-card px-2.5 text-sm font-normal text-foreground outline-none focus:border-ring focus:ring-1 focus:ring-ring"
-      >
-        {options.map((opt) => (
-          <option key={opt} value={opt}>
-            {opt}
-          </option>
-        ))}
-      </select>
-    </label>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+        active
+          ? "border-primary bg-primary text-primary-foreground"
+          : "border-border bg-card text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
   )
 }
 
-function ProductDrawer({ row, onClose }: { row: ProcurementRow; onClose: () => void }) {
-  const best = bestPrice(row)
-  const entries = priceEntries(row)
-
+function ProductDrawer({
+  product,
+  history,
+  loading,
+  onClose,
+}: {
+  product: ProductPriceRow
+  history: PriceHistoryRow[]
+  loading: boolean
+  onClose: () => void
+}) {
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
-      <div
+      <button
+        type="button"
+        aria-label="Close panel"
         className="absolute inset-0 bg-primary/30 backdrop-blur-[1px]"
         onClick={onClose}
-        aria-hidden
       />
       <aside
         role="dialog"
         aria-modal="true"
-        aria-label={`${row.product} detail`}
+        aria-label={`${product.name} detail`}
         className="relative flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-border bg-card shadow-xl"
       >
         <div className="flex items-start justify-between gap-3 border-b border-border px-6 py-5">
           <div className="flex flex-col gap-1">
             <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <Boxes className="h-3.5 w-3.5" strokeWidth={1.75} />
-              {row.buildStage}
+              {product.category || "Uncategorised"}
             </span>
-            <h2 className="text-lg font-semibold text-foreground">{row.product}</h2>
-            <span className="text-sm text-muted-foreground">Priced per {row.unit}</span>
+            <h2 className="text-pretty text-lg font-semibold text-foreground">{product.name}</h2>
+            {product.manufacturer ? (
+              <span className="text-sm text-muted-foreground">{product.manufacturer}</span>
+            ) : null}
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <X className="h-5 w-5" strokeWidth={1.75} />
           </button>
         </div>
 
-        <div className="flex flex-col gap-6 px-6 py-6">
-          {best ? (
-            <div className="rounded-lg border border-success/30 bg-success-bg px-4 py-3">
-              <p className="text-xs font-medium text-success">Best current price</p>
-              <p className="mt-0.5 text-xl font-semibold text-success tabular-nums">
-                {formatGBP(best.price, { decimals: true })}{" "}
-                <span className="text-sm font-normal">via {best.merchant}</span>
-              </p>
-            </div>
-          ) : null}
+        <div className="grid grid-cols-2 gap-3 px-6 py-5">
+          <DrawerStat
+            label="Best price"
+            value={product.minPrice != null ? formatGBP(product.minPrice, { decimals: true }) : "—"}
+            accent="success"
+          />
+          <DrawerStat
+            label="Highest seen"
+            value={product.maxPrice != null ? formatGBP(product.maxPrice, { decimals: true }) : "—"}
+          />
+          <DrawerStat
+            label="Average"
+            value={product.avgPrice != null ? formatGBP(product.avgPrice, { decimals: true }) : "—"}
+          />
+          <DrawerStat label="Merchants" value={String(product.supplierCount)} />
+        </div>
 
-          <DrawerSection title="Merchant comparison">
-            <ul className="flex flex-col divide-y divide-border">
-              {entries.map((e) => (
-                <li key={e.merchant} className="flex items-center justify-between py-2">
-                  <span className="text-sm text-foreground">{e.merchant}</span>
-                  <span
-                    className={cn(
-                      "text-sm font-medium tabular-nums",
-                      best && e.merchant === best.merchant ? "text-success" : "text-foreground",
-                    )}
-                  >
-                    {formatGBP(e.price, { decimals: true })}
-                  </span>
+        <div className="border-t border-border px-6 py-5">
+          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Price history
+          </h3>
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : history.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No price records yet.</p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {history.map((h) => (
+                <li
+                  key={h.id}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border px-3 py-2.5"
+                >
+                  <div className="flex flex-col">
+                    <span className="text-sm font-medium text-foreground">{h.supplierName}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {h.invoiceDate ? formatDate(h.invoiceDate) : "Undated"}
+                      {h.invoiceNumber ? ` · ${h.invoiceNumber}` : ""}
+                      {h.projectName ? ` · ${h.projectName}` : ""}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {h.transactionType === "credit" ? (
+                      <StatusBadge variant="warning">Credit</StatusBadge>
+                    ) : null}
+                    <span className="font-medium tabular-nums text-foreground">
+                      {formatGBP(h.priceExVat, { decimals: true })}
+                      {h.unit ? <span className="text-xs text-muted-foreground">/{h.unit}</span> : null}
+                    </span>
+                  </div>
                 </li>
               ))}
             </ul>
-          </DrawerSection>
-
-          <DrawerSection title="Price history" pending>
-            <PendingNote text="Historic price points will chart here once the procurement database is imported." />
-          </DrawerSection>
-
-          <DrawerSection title="Invoice history" pending>
-            <PendingNote text="Purchases of this product from ingested invoices will be listed here." />
-          </DrawerSection>
-
-          <DrawerSection title="Supplier product codes" pending>
-            <PendingNote text="Merchant-specific SKUs and product codes will be mapped here." />
-          </DrawerSection>
-
-          <DrawerSection title="Last purchase date" pending>
-            <PendingNote text="Populated from the most recent ingested invoice line." />
-          </DrawerSection>
+          )}
         </div>
       </aside>
     </div>
   )
 }
 
-function DrawerSection({
-  title,
-  pending,
-  children,
+function DrawerStat({
+  label,
+  value,
+  accent,
 }: {
-  title: string
-  pending?: boolean
-  children: React.ReactNode
+  label: string
+  value: string
+  accent?: "success"
 }) {
   return (
-    <section className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-        {pending ? <StatusBadge variant="neutral">Pending import</StatusBadge> : null}
-      </div>
-      {children}
-    </section>
-  )
-}
-
-function PendingNote({ text }: { text: string }) {
-  return (
-    <div className="rounded-md border border-dashed border-border-strong bg-muted/40 px-3 py-2.5">
-      <p className="text-xs text-muted-foreground">{text}</p>
+    <div className="rounded-lg border border-border bg-background p-3">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p
+        className={cn(
+          "mt-1 text-lg font-semibold tabular-nums",
+          accent === "success" ? "text-success" : "text-foreground",
+        )}
+      >
+        {value}
+      </p>
     </div>
   )
 }

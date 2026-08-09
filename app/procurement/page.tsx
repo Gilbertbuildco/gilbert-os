@@ -1,16 +1,19 @@
 import { PageHeader } from "@/components/page-header"
 import { ProcurementView } from "@/components/procurement-view"
+import { getProductPrices } from "@/lib/queries"
 
-export default function ProcurementPage() {
+export const dynamic = "force-dynamic"
+
+export default async function ProcurementPage() {
+  const products = await getProductPrices()
+
   return (
     <>
       <PageHeader
         title="Procurement"
-        description="Compare merchant pricing across build stages to identify the best price and track savings. The full 211-product database will be imported into this view."
+        description="Live merchant pricing built from confirmed supplier invoices. Open a product to see its full price history and compare merchants."
       />
-      <main className="px-8 py-8">
-        <ProcurementView />
-      </main>
+      <ProcurementView products={products} />
     </>
   )
 }

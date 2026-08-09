@@ -385,13 +385,38 @@ export async function suggestPackagesForProject(
   if (packages.length === 0) return results
 
   // Tier 1 — learned PRODUCT → package mapping (strongest: a human previously
-  // confirmed this exact product's package).
+  // confirmed this exact product's package). This is the only signal allowed to
+  // override the material-first insulation rule below, because it represents a
+  // deliberate decision about THIS specific product.
   let unresolved: number[] = []
   for (let i = 0; i < lines.length; i++) {
     const p = resolvePkg(lines[i].learnedPackageCode, lines[i].learnedPackageName)
     if (p) setResult(i, p, "high", true)
     else unresolved.push(i)
   }
+
+  // Material-first rule — a product that is clearly insulation belongs in the
+  // dedicated "Insulation" cost package regardless of where in the building it
+  // is installed (roof/wall/floor). This deliberately runs BEFORE the broad
+  // category-learned and AI tiers so location-based packages can't capture
+  // insulation; only a specific learned product mapping (Tier 1 above) can.
+  const insulationPkg = byName.get("insulation")
+  if (insulationPkg) {
+    const stillUnresolved: number[] = []
+    for (const i of unresolved) {
+      const hay = `${lines[i].category ?? ""} ${lines[i].productType ?? ""} ${
+        lines[i].normalisedName ?? ""
+      } ${lines[i].description ?? ""}`.toLowerCase()
+      if (/insulation|insulated|insulating/.test(hay)) {
+        setResult(i, insulationPkg, "high", false)
+      } else {
+        stillUnresolved.push(i)
+      }
+    }
+    unresolved = stillUnresolved
+  }
+
+  if (unresolved.length === 0) return results
 
   // Tier 2 — learned CATEGORY → package mapping (a human previously confirmed
   // that this category of material belongs to this package).

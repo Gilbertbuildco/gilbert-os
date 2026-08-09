@@ -32,6 +32,7 @@ const DEFAULT_PACKAGES: Array<{ code: string; name: string }> = [
   { code: "16", name: "Flooring" },
   { code: "17", name: "External Works & Landscaping" },
   { code: "18", name: "Drainage" },
+  { code: "19", name: "Insulation" },
 ]
 
 export type CreateProjectInput = {

@@ -141,9 +141,11 @@ export async function suggestCostPackages(
   const instructions =
     "You are mapping construction invoice lines to a project's existing cost plan. You may ONLY choose a cost " +
     "package from the provided list — never invent a package. For each line return BOTH the chosen package's CODE " +
-    "and its exact NAME (copied verbatim from the list) so it can be resolved reliably. Always make your best " +
-    "attempt using the material category and product type as strong hints (e.g. an insulation board belongs to the " +
-    "package covering the element it insulates — walls, roof or floor). Use 'high' confidence for an obvious fit, " +
+    "and its exact NAME (copied verbatim from the list) so it can be resolved reliably. Classify by the MATERIAL " +
+    "itself, not by where it is installed: when a dedicated material package exists (for example 'Insulation'), " +
+    "prefer it over any location-based package. An insulation product (insulation board, PIR, mineral wool, etc.) " +
+    "belongs in the 'Insulation' package regardless of whether it goes in the roof, walls or floor. Only fall back " +
+    "to a location-based package when no dedicated material package fits. Use 'high' confidence for an obvious fit, " +
     "'medium' when it is a reasonable best-guess among a few plausible packages, and 'low' when you are unsure. " +
     "Only return null for both fields when genuinely no package could apply."
 

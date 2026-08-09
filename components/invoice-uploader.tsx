@@ -5,12 +5,8 @@ import { useRouter } from "next/navigation"
 import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
 import { StatusBadge } from "@/components/status-badge"
-import {
-  extractInvoice,
-  commitInvoice,
-  type CommitLineItem,
-  type ExtractedInvoice,
-} from "@/app/actions/invoices"
+import { commitInvoice, type CommitLineItem } from "@/app/actions/invoices"
+import type { ExtractedInvoice, ExtractionResult } from "@/lib/invoice-extraction"
 import { fetchCostPackages } from "@/app/actions/lookups"
 
 type ProjectOption = { id: number; name: string; slug: string }
@@ -110,23 +106,38 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     }
   }
 
+  function fallbackToManual(message: string) {
+    setError(message)
+    setSourcePathname(null)
+    setDrafts([blankDraft()])
+    setSaved([false])
+    setCurrent(0)
+    setStep("review")
+  }
+
   async function handleFile(file: File) {
     setError(null)
     setExtracting(true)
     setFileName(file.name)
-    const fd = new FormData()
-    fd.append("file", file)
-    const result = await extractInvoice(fd)
+
+    let result: ExtractionResult
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      const res = await fetch("/api/extract-invoice", { method: "POST", body: fd })
+      result = (await res.json()) as ExtractionResult
+    } catch (err) {
+      console.log("[v0] upload/extraction request failed:", (err as Error).message)
+      setExtracting(false)
+      fallbackToManual(
+        "We couldn't read that file automatically, but you can enter the details manually below.",
+      )
+      return
+    }
     setExtracting(false)
 
     if (!result.ok) {
-      setError(result.error)
-      // Still allow manual entry
-      setSourcePathname(null)
-      setDrafts([blankDraft()])
-      setSaved([false])
-      setCurrent(0)
-      setStep("review")
+      fallbackToManual(result.error)
       return
     }
 

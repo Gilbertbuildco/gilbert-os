@@ -40,8 +40,9 @@ export async function GET() {
         lineNet: li.lineNet ?? (li.quantity && li.unitPriceExVat ? li.quantity * li.unitPriceExVat : 0),
         vatRate: li.vatRate ?? 20,
         costPackageId: null,
+        productId: null,
         trackAsProduct: true,
-        productCategory: null,
+        newProductCategory: null,
       })),
     })
     committed.push(res)

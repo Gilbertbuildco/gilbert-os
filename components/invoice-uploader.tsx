@@ -1349,6 +1349,27 @@ function docStatus(d: Draft): DocStatus {
     bump("warn")
   }
 
+  // Cost-package classification is an important field: once a project is chosen
+  // every genuine line should land in a package. Flag lines left unassigned, or
+  // where only a medium-confidence guess was preselected and not yet confirmed.
+  if (d.projectId) {
+    const genuine = d.lines.filter((l) => l.description.trim())
+    const unassigned = genuine.filter((l) => !l.costPackageId).length
+    const unconfirmed = genuine.filter(
+      (l) => l.costPackageId && l.suggestConfidence === "medium" && !l.packageConfirmed,
+    ).length
+    if (unassigned > 0) {
+      reasons.push(unassigned === 1 ? "1 line needs a cost package" : `${unassigned} lines need a cost package`)
+      bump("warn")
+    }
+    if (unconfirmed > 0) {
+      reasons.push(
+        unconfirmed === 1 ? "Confirm 1 cost-package suggestion" : `Confirm ${unconfirmed} cost-package suggestions`,
+      )
+      bump("warn")
+    }
+  }
+
   return { ready: reasons.length === 0, reasons, severity }
 }
 

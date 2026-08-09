@@ -73,6 +73,22 @@ export function scoreSupplierMatch(extractedNormalised: string, candidateNormali
     }
   }
 
+  // Shared leading brand prefix: supplier names lead with the brand, so when two
+  // names agree on their first two-plus tokens but then each carry their own
+  // extra words (branch/location/division text such as "Exeter Branch" or
+  // "(Managed) Limited"), they are very likely the same merchant. This is not
+  // full containment, so treat it as a plausible-but-uncertain (medium) match —
+  // surfaced for one-click confirmation rather than silently creating a
+  // duplicate supplier.
+  let prefix = 0
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] === b[i]) prefix++
+    else break
+  }
+  if (prefix >= 2) {
+    return Math.max(j, 0.7)
+  }
+
   return j
 }
 

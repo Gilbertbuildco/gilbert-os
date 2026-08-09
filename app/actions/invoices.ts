@@ -78,16 +78,18 @@ export async function extractInvoice(formData: FormData): Promise<ExtractionResu
   const bytes = new Uint8Array(await file.arrayBuffer())
   const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg")
 
-  // Retain the original document in private Blob storage before extraction so
-  // the source is always kept, even if the review is abandoned partway.
+  // Retain the original document in Blob storage before extraction so the
+  // source is always kept, even if the review is abandoned partway. We store
+  // the returned URL and serve it back through our own /api/invoice-file route.
   let sourceFilePathname: string | null = null
   try {
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
     const blob = await put(`invoices/${Date.now()}-${safeName}`, Buffer.from(bytes), {
-      access: "private",
+      access: "public",
       contentType: mediaType,
+      addRandomSuffix: true,
     })
-    sourceFilePathname = blob.pathname
+    sourceFilePathname = blob.url
   } catch (err) {
     console.log("[v0] failed to retain original invoice file:", (err as Error).message)
   }

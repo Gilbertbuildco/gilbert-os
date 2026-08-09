@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    // Invoice uploads (multi-page PDF scans) can exceed the 1MB default.
+    serverActions: { bodySizeLimit: "15mb" },
+  },
   async headers() {
     return [
       {

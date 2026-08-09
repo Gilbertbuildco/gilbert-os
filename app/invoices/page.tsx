@@ -99,7 +99,7 @@ export default async function InvoicesPage() {
                       <td className="px-4 py-3">
                         {inv.sourceFilePathname ? (
                           <a
-                            href={`/api/invoice-file?pathname=${encodeURIComponent(inv.sourceFilePathname)}`}
+                            href={inv.sourceFilePathname}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1.5 text-primary hover:underline"

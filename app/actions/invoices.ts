@@ -13,7 +13,11 @@ import { generateObject } from "ai"
 import { z } from "zod"
 import { revalidatePath } from "next/cache"
 
-const EXTRACTION_MODEL = "google/gemini-2.5-flash"
+// Vision-capable models available on the zero-config AI Gateway. We try them
+// in order so a rate-limit or availability issue on one falls back to another.
+const EXTRACTION_MODELS = ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 const lineItemSchema = z.object({
   description: z.string().describe("The line item description exactly as printed"),
@@ -62,36 +66,53 @@ export async function extractInvoice(formData: FormData): Promise<ExtractionResu
   const bytes = new Uint8Array(await file.arrayBuffer())
   const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg")
 
-  try {
-    const { object } = await generateObject({
-      model: EXTRACTION_MODEL,
-      schema: extractionSchema,
-      instructions:
-        "You are a construction accounts assistant. Extract supplier invoices and credit notes into structured data. " +
-        "Read every line item. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless stated otherwise. " +
-        "Never invent line items that are not on the document. If a value is missing, use null.",
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: "Extract this supplier document into the required schema.",
-            },
-            { type: "file", data: bytes, mediaType, filename: file.name },
-          ],
-        },
-      ],
-    })
+  const instructions =
+    "You are a construction accounts assistant. Extract supplier invoices and credit notes into structured data. " +
+    "Read every line item. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless stated otherwise. " +
+    "Never invent line items that are not on the document. If a value is missing, use null."
 
-    return { ok: true, data: object, fileName: file.name }
-  } catch (err) {
-    console.log("[v0] invoice extraction failed:", (err as Error).message)
-    return {
-      ok: false,
-      error:
-        "Could not read that document automatically. You can still enter the details manually below.",
+  const messages = [
+    {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Extract this supplier document into the required schema." },
+        { type: "file" as const, data: bytes, mediaType, filename: file.name },
+      ],
+    },
+  ]
+
+  let rateLimited = false
+  let lastError = ""
+
+  for (const model of EXTRACTION_MODELS) {
+    // Up to two attempts per model to absorb transient free-tier rate limits.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const { object } = await generateObject({ model, schema: extractionSchema, instructions, messages })
+        return { ok: true, data: object, fileName: file.name }
+      } catch (err) {
+        const message = (err as Error).message ?? ""
+        lastError = message
+        const isRateLimit = /rate.?limit|429/i.test(message)
+        console.log(`[v0] extraction attempt failed (${model}):`, message)
+        if (isRateLimit) {
+          rateLimited = true
+          if (attempt === 0) {
+            await sleep(1500)
+            continue
+          }
+        }
+        break // non-rate-limit error, or already retried — move to next model
+      }
     }
+  }
+
+  console.log("[v0] invoice extraction gave up:", lastError)
+  return {
+    ok: false,
+    error: rateLimited
+      ? "Automatic reading is temporarily rate-limited. Please wait a moment and try again, or enter the details manually below."
+      : "Could not read that document automatically. You can still enter the details manually below.",
   }
 }
 

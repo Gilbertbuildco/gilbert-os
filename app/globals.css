@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f4f4f2;
+  --foreground: #1f2328;
+
+  --card: #ffffff;
+  --card-foreground: #1f2328;
+
+  --muted: #eeeeeb;
+  --muted-foreground: #6b7280;
+
+  --border: #e4e4e1;
+  --border-strong: #d4d4d0;
+
+  --primary: #14233b;
+  --primary-foreground: #f8fafc;
+
+  --accent: #1f3a5f;
+  --accent-foreground: #f8fafc;
+
+  /* Deep navy sidebar */
+  --sidebar: #0f1b2e;
+  --sidebar-foreground: #c8d1de;
+  --sidebar-muted: #8794a7;
+  --sidebar-border: #1e2c42;
+  --sidebar-active: #1c2c45;
+  --sidebar-active-foreground: #ffffff;
+  --sidebar-brand: #ffffff;
+
+  /* Restrained commercial status colours */
+  --success: #2f7a4d;
+  --success-bg: #eaf3ed;
+  --warning: #a9781f;
+  --warning-bg: #f8f0dd;
+  --danger: #b23a3a;
+  --danger-bg: #f7e9e9;
+  --info: #2f5a8a;
+  --info-bg: #e8eef6;
+
+  --ring: #1f3a5f;
+  --radius: 0.375rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted: var(--sidebar-muted);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-active: var(--sidebar-active);
+  --color-sidebar-active-foreground: var(--sidebar-active-foreground);
+  --color-sidebar-brand: var(--sidebar-brand);
+
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+
+  --color-ring: var(--ring);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  background-color: var(--background);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Tabular figures for financial data */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

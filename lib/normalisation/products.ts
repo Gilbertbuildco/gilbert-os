@@ -53,6 +53,19 @@ export function normaliseProductName(description: string): string {
   return s.replace(/\s+/g, " ").trim().toUpperCase()
 }
 
+/**
+ * A stable, lowercased key for a raw description, used to look up and store
+ * learned classification mappings. Strips punctuation and reference noise so
+ * cosmetic differences ("18mm OSB3" vs "OSB3 18 mm.") collapse to one key.
+ */
+export function normaliseDescriptionKey(description: string): string {
+  return normaliseProductName(description)
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+}
+
 // Keywords for lines that are charges/adjustments/services rather than genuine
 // comparable construction materials. These should NOT pollute the procurement
 // price database (they may still be legitimate project costs).

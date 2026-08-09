@@ -4,7 +4,12 @@ import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
-import { commitInvoice, classifyDocuments, type CommitLineItem } from "@/app/actions/invoices"
+import { commitInvoice, type CommitLineItem } from "@/app/actions/invoices"
+import {
+  prepareBatch,
+  suggestPackagesForProject,
+  type DocIntelligence,
+} from "@/app/actions/enrichment"
 import type { ExtractedInvoice, ExtractionResult } from "@/lib/invoice-extraction"
 import type { DuplicateVerdict } from "@/lib/duplicate-detection"
 import { fetchCostPackages } from "@/app/actions/lookups"
@@ -42,6 +47,24 @@ interface DraftLine {
   costPackageId: string
   trackAsProduct: boolean
   productCategory: string
+  // --- intelligence (populated by the enrichment pass, all optional) ---
+  normalisedUnit?: string | null
+  unitConfident?: boolean
+  trackReason?: string
+  trackConfidence?: "high" | "medium" | "low"
+  manufacturer?: string | null
+  productType?: string | null
+  productFamily?: string | null
+  dimensions?: string | null
+  thickness?: string | null
+  normalisedName?: string
+  subcategory?: string | null
+  // learned/suggested cost-package context
+  learnedPackageCode?: string | null
+  learnedPackageName?: string | null
+  suggestedPackageId?: string
+  suggestConfidence?: "high" | "medium" | "low" | "none"
+  packageFromMemory?: boolean
 }
 
 interface Draft {
@@ -66,7 +89,23 @@ interface Draft {
   verdict: DuplicateVerdict | null
   // For a possible-duplicate, the user must tick "import anyway" before commit.
   confirmedNew: boolean
+  // --- intelligence ---
+  // Fuzzy supplier match against existing suppliers/aliases.
+  supplierMatch: SupplierMatchInfo | null
+  // Original AI extraction retained for audit + model self-reported confidence.
+  extractionRaw: unknown
+  confidence: "high" | "medium" | "low" | null
+  // Arithmetic reconciliation result for the header totals vs the lines.
+  reconciled: boolean
+  reconIssues: string[]
   lines: DraftLine[]
+}
+
+type SupplierMatchInfo = {
+  supplierId: number | null
+  supplierName: string | null
+  status: "exact" | "strong" | "weak" | "none"
+  score: number
 }
 
 const emptyLine: DraftLine = {
@@ -90,8 +129,12 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   const router = useRouter()
   const [step, setStep] = useState<"upload" | "reading" | "review" | "summary">("upload")
   const [extracting, setExtracting] = useState(false)
+  const [enriching, setEnriching] = useState(false)
+  const [suggesting, setSuggesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [packages, setPackages] = useState<PackageOption[]>([])
+  // Which document index the exception filter is limiting the nav to.
+  const [filter, setFilter] = useState<"all" | "attention" | "ready">("all")
   // Per-file progress shown while a batch is being read.
   const [fileProgress, setFileProgress] = useState<FileProgress[]>([])
   const [processedCount, setProcessedCount] = useState(0)
@@ -135,6 +178,11 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       sourceFileHash: source.hash,
       verdict: null,
       confirmedNew: false,
+      supplierMatch: null,
+      extractionRaw: d,
+      confidence: d.confidence ?? null,
+      reconciled: true,
+      reconIssues: [],
       lines: (d.lineItems ?? []).map((li) => ({
         description: li.description ?? "",
         quantity: li.quantity != null ? String(li.quantity) : "",
@@ -207,25 +255,39 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       setProcessedCount(i + 1)
     }
 
-    // Classify against the database (and within this batch) for duplicates.
+    // Run the full intelligence pass: supplier matching, duplicate
+    // classification, normalisation, AI enrichment, learned-mapping recall and
+    // arithmetic validation. Best-effort — never blocks ingestion.
+    setEnriching(true)
     try {
-      const verdicts = await classifyDocuments(
+      const intel = await prepareBatch(
         collected.map((d) => ({
           supplierName: d.newSupplierName,
           invoiceNumber: d.invoiceNumber.trim() || null,
           transactionType: d.transactionType,
+          invoiceDate: d.invoiceDate || null,
           net: d.net ? parseFloat(d.net) : null,
           vat: d.vat ? parseFloat(d.vat) : null,
           gross: d.gross ? parseFloat(d.gross) : null,
-          invoiceDate: d.invoiceDate || null,
           sourceFileHash: d.sourceFileHash,
+          lines: d.lines.map((l) => ({
+            description: l.description,
+            quantity: l.quantity ? parseFloat(l.quantity) : null,
+            unit: l.unit || null,
+            unitPriceExVat: l.unitPriceExVat ? parseFloat(l.unitPriceExVat) : null,
+            lineNet: l.lineNet ? parseFloat(l.lineNet) : null,
+            vatRate: l.vatRate ? parseFloat(l.vatRate) : null,
+          })),
         })),
       )
-      for (let i = 0; i < collected.length; i++) collected[i].verdict = verdicts[i] ?? null
+      for (let i = 0; i < collected.length; i++) {
+        if (intel[i]) applyIntelligence(collected[i], intel[i])
+      }
     } catch (err) {
-      console.log("[v0] duplicate classification failed:", (err as Error).message)
-      // Non-fatal: proceed without verdicts rather than block ingestion.
+      console.log("[v0] prepareBatch failed:", (err as Error).message)
+      // Non-fatal: proceed without intelligence rather than block ingestion.
     }
+    setEnriching(false)
 
     setExtracting(false)
     setDrafts(collected)
@@ -234,6 +296,55 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     const firstActionable = collected.findIndex((d) => d.verdict?.status !== "already_imported")
     setCurrent(firstActionable === -1 ? 0 : firstActionable)
     setStep("review")
+  }
+
+  // Fold a document's intelligence into its draft in place (mutates the draft,
+  // which is safe here because these drafts have not yet been handed to React).
+  function applyIntelligence(d: Draft, intel: DocIntelligence) {
+    d.verdict = intel.verdict
+    d.reconciled = intel.reconciled
+    d.reconIssues = intel.reconIssues
+    const m = intel.supplierMatch
+    // Map the server's confidence grade to a UI status: an exact string match
+    // (score 1) is "exact", other high-confidence matches "strong", medium
+    // matches are "weak" suggestions, and everything else "none".
+    const status: SupplierMatchInfo["status"] =
+      m.confidence === "high" ? (m.score >= 1 ? "exact" : "strong") : m.confidence === "medium" ? "weak" : "none"
+    d.supplierMatch = {
+      supplierId: m.supplierId,
+      supplierName: m.supplierName,
+      status,
+      score: m.score,
+    }
+    // Auto-select the supplier only on an exact/strong match; a weak match is
+    // surfaced as a suggestion the reviewer confirms.
+    if (m.supplierId != null && (status === "exact" || status === "strong")) {
+      d.supplierId = String(m.supplierId)
+    }
+    d.lines = d.lines.map((line, i) => {
+      const li = intel.lines[i]
+      if (!li) return line
+      return {
+        ...line,
+        unit: line.unit || li.rawUnit || "",
+        normalisedUnit: li.normalisedUnit,
+        unitConfident: li.unitConfident,
+        trackAsProduct: li.trackAsProduct,
+        trackReason: li.trackReason,
+        trackConfidence: li.trackConfidence,
+        manufacturer: li.manufacturer,
+        productType: li.productType,
+        productFamily: li.productFamily,
+        dimensions: li.dimensions,
+        thickness: li.thickness,
+        normalisedName: li.normalisedName,
+        subcategory: li.subcategory,
+        productCategory: line.productCategory || li.category || "",
+        learnedPackageCode: li.learnedPackageCode,
+        learnedPackageName: li.learnedPackageName,
+        packageFromMemory: li.fromMemory,
+      }
+    })
   }
 
   function blankDraft(): Draft {
@@ -255,18 +366,87 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       sourceFileHash: null,
       verdict: null,
       confirmedNew: false,
+      supplierMatch: null,
+      extractionRaw: null,
+      confidence: null,
+      reconciled: true,
+      reconIssues: [],
       lines: [{ ...emptyLine }],
     }
   }
 
   async function onProjectChange(projectId: string) {
     if (!draft) return
+    const capturedIndex = current
     setDraft({ ...draft, projectId })
-    if (projectId) {
+    if (!projectId) {
+      setPackages([])
+      return
+    }
+    const pkgs = await fetchCostPackages(Number(projectId))
+    setPackages(pkgs)
+    await resolvePackagesFor(capturedIndex, Number(projectId))
+  }
+
+  // Ask the server to resolve a cost package per line for a document within the
+  // chosen project (learned mappings first, then AI over the project's plan).
+  // Only fills packages the reviewer hasn't already chosen.
+  async function resolvePackagesFor(docIndex: number, projectId: number) {
+    const d = drafts[docIndex]
+    if (!d) return
+    setSuggesting(true)
+    try {
+      const resolved = await suggestPackagesForProject(
+        projectId,
+        d.lines.map((l) => ({
+          description: l.description,
+          category: l.productCategory || null,
+          productType: l.productType ?? null,
+          normalisedName: l.normalisedName ?? l.description,
+          learnedPackageCode: l.learnedPackageCode ?? null,
+        })),
+      )
+      setDrafts((prev) =>
+        prev.map((doc, i) => {
+          if (i !== docIndex) return doc
+          return {
+            ...doc,
+            lines: doc.lines.map((line, li) => {
+              const r = resolved[li]
+              if (!r || r.packageId == null) return line
+              return {
+                ...line,
+                suggestedPackageId: String(r.packageId),
+                suggestConfidence: r.confidence,
+                packageFromMemory: r.fromMemory || line.packageFromMemory,
+                // Auto-apply a confident suggestion when the user hasn't chosen.
+                costPackageId:
+                  line.costPackageId ||
+                  (r.confidence === "high" ? String(r.packageId) : line.costPackageId),
+              }
+            }),
+          }
+        }),
+      )
+    } catch (err) {
+      console.log("[v0] resolvePackagesFor failed:", (err as Error).message)
+    } finally {
+      setSuggesting(false)
+    }
+  }
+
+  // Assign one project to every not-yet-actioned document in the batch, then
+  // resolve cost packages for each. This is the common case: a whole delivery
+  // of invoices belongs to one project.
+  async function assignProjectToBatch(projectId: string) {
+    setDrafts((prev) => prev.map((d, i) => (saved[i] ? d : { ...d, projectId })))
+    if (projectId && draft) {
       const pkgs = await fetchCostPackages(Number(projectId))
       setPackages(pkgs)
-    } else {
-      setPackages([])
+      // Resolve packages for each unactioned doc sequentially.
+      for (let i = 0; i < drafts.length; i++) {
+        if (!saved[i]) await resolvePackagesFor(i, Number(projectId))
+      }
     }
   }
 
@@ -324,9 +504,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     if (nextIndex === -1) {
       setStep("summary")
     } else {
-      setError(null)
-      setPackages([])
-      setCurrent(nextIndex)
+      goToDocument(nextIndex)
     }
   }
 
@@ -362,30 +540,48 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       setError("Select or enter a supplier before saving.")
       return
     }
+    const pkgById = new Map(packages.map((p) => [String(p.id), p]))
     const payloadLines: CommitLineItem[] = draft.lines
       .filter((l) => l.description.trim())
-      .map((l) => ({
-        description: l.description.trim(),
-        quantity: l.quantity ? parseFloat(l.quantity) : null,
-        unit: l.unit.trim() || null,
-        unitPriceExVat: l.unitPriceExVat ? parseFloat(l.unitPriceExVat) : null,
-        lineNet: parseFloat(l.lineNet) || 0,
-        vatRate: l.vatRate ? parseFloat(l.vatRate) : null,
-        costPackageId: l.costPackageId ? Number(l.costPackageId) : null,
-        productId: null,
-        trackAsProduct: l.trackAsProduct,
-        newProductName: null,
-        newProductCategory: l.productCategory.trim() || null,
-      }))
+      .map((l) => {
+        const pkg = l.costPackageId ? pkgById.get(l.costPackageId) : undefined
+        return {
+          description: l.description.trim(),
+          quantity: l.quantity ? parseFloat(l.quantity) : null,
+          unit: l.unit.trim() || null,
+          normalisedUnit: l.normalisedUnit ?? null,
+          unitPriceExVat: l.unitPriceExVat ? parseFloat(l.unitPriceExVat) : null,
+          lineNet: parseFloat(l.lineNet) || 0,
+          vatRate: l.vatRate ? parseFloat(l.vatRate) : null,
+          costPackageId: l.costPackageId ? Number(l.costPackageId) : null,
+          costPackageCode: pkg?.code ?? l.learnedPackageCode ?? null,
+          costPackageName: pkg?.name ?? l.learnedPackageName ?? null,
+          productId: null,
+          trackAsProduct: l.trackAsProduct,
+          isPriceTracked: l.trackAsProduct,
+          newProductName: null,
+          newProductCategory: l.productCategory.trim() || null,
+          normalisedProduct: {
+            normalisedName: l.normalisedName ?? null,
+            productFamily: l.productFamily ?? null,
+            productType: l.productType ?? null,
+            dimensions: l.dimensions ?? null,
+            thickness: l.thickness ?? null,
+            subcategory: l.subcategory ?? null,
+          },
+        }
+      })
 
     const capturedIndex = current
     const capturedDraft = draft
 
     startSaving(async () => {
       try {
+        const status = docStatus(capturedDraft)
         const result = await commitInvoice({
           supplierId: capturedDraft.supplierId ? Number(capturedDraft.supplierId) : null,
           newSupplierName: capturedDraft.supplierId ? null : capturedDraft.newSupplierName.trim(),
+          rawSupplierHeading: capturedDraft.newSupplierName.trim() || null,
           projectId: capturedDraft.projectId ? Number(capturedDraft.projectId) : null,
           invoiceNumber: capturedDraft.invoiceNumber.trim() || null,
           invoiceDate: capturedDraft.invoiceDate || null,
@@ -399,6 +595,10 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           sourcePageStart: capturedDraft.pageStart,
           sourcePageEnd: capturedDraft.pageEnd,
           notes: capturedDraft.notes.trim() || null,
+          extractionRaw: capturedDraft.extractionRaw,
+          confidence: capturedDraft.confidence,
+          reconciled: capturedDraft.reconciled,
+          needsReview: !status.ready,
           lineItems: payloadLines,
         })
 
@@ -433,8 +633,16 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
 
   function goToDocument(index: number) {
     setError(null)
-    setPackages([])
     setCurrent(index)
+    // Keep the cost-package dropdown in sync with the target document's project.
+    const target = drafts[index]
+    if (target?.projectId) {
+      fetchCostPackages(Number(target.projectId))
+        .then(setPackages)
+        .catch(() => setPackages([]))
+    } else {
+      setPackages([])
+    }
   }
 
   function resetToUpload() {
@@ -508,6 +716,17 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   const isAlreadyImported = verdict?.status === "already_imported"
   const isPossibleDuplicate = verdict?.status === "possible_duplicate"
 
+  // Per-document status for the whole batch, used by the exception overview.
+  const statuses = drafts.map((d) => docStatus(d))
+  const currentStatus = statuses[current]
+  const pending = drafts.map((_, i) => !saved[i])
+  const readyCount = statuses.filter((s, i) => pending[i] && s.ready).length
+  const attentionCount = statuses.filter((s, i) => pending[i] && !s.ready).length
+  const jumpToFirstAttention = () => {
+    const idx = statuses.findIndex((s, i) => pending[i] && !s.ready)
+    if (idx !== -1) goToDocument(idx)
+  }
+
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-6 px-8 py-8">
       {error ? (
@@ -529,44 +748,131 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       ) : null}
 
       {total > 1 ? (
-        <div className="flex flex-col gap-3 rounded-lg border border-info/30 bg-info-bg px-4 py-3.5">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-sm font-medium text-foreground">
-              {total} documents detected — {savedCount} of {total} actioned
-            </p>
-            <span className="text-xs font-medium text-muted-foreground">
-              Reviewing {current + 1} of {total}
-            </span>
+        <div className="flex flex-col gap-3.5 rounded-xl border border-border bg-card px-4 py-4">
+          {/* Summary line + batch-wide project assignment */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="font-semibold text-foreground">{total} documents</span>
+              <span className="text-muted-foreground">·</span>
+              <span className="text-muted-foreground">{savedCount} actioned</span>
+              {enriching || suggesting ? (
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} />
+                  Analysing…
+                </span>
+              ) : null}
+            </div>
+            <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              Assign all to
+              <select
+                value=""
+                onChange={(e) => e.target.value && assignProjectToBatch(e.target.value)}
+                className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground focus:border-ring focus:outline-none"
+              >
+                <option value="">Choose project…</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
+
+          {/* Exception counts + jump */}
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusPill tone="success">{readyCount} ready</StatusPill>
+            <StatusPill tone="warning">{attentionCount} need attention</StatusPill>
+            {attentionCount > 0 ? (
+              <button
+                type="button"
+                onClick={jumpToFirstAttention}
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                Go to next exception
+              </button>
+            ) : null}
+            <div className="ml-auto flex items-center gap-1 rounded-lg border border-border p-0.5">
+              {(["all", "attention", "ready"] as const).map((f) => (
+                <button
+                  key={f}
+                  type="button"
+                  onClick={() => setFilter(f)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors",
+                    filter === f
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Document chips (filtered) */}
           <div className="flex flex-wrap gap-2">
             {drafts.map((d, i) => {
-              const isCurrent = i === current
+              const st = statuses[i]
               const isSaved = saved[i]
-              const v = d.verdict?.status
-              const dupePending = !isSaved && (v === "already_imported" || v === "possible_duplicate")
+              if (filter === "attention" && (isSaved || st.ready)) return null
+              if (filter === "ready" && (isSaved || !st.ready)) return null
+              const isCurrent = i === current
+              const tone = isSaved
+                ? "border-success/40 bg-success-bg text-success"
+                : st.severity === "block"
+                  ? "border-danger/40 bg-danger-bg text-danger"
+                  : st.severity === "warn"
+                    ? "border-warning/40 bg-warning-bg text-warning"
+                    : "border-border bg-card text-foreground hover:bg-muted"
               return (
                 <button
                   key={i}
                   type="button"
                   onClick={() => goToDocument(i)}
+                  title={st.reasons.join(" · ") || "Ready"}
                   className={cn(
-                    "flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
-                    isCurrent
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : isSaved
-                        ? "border-success/40 bg-success-bg text-success"
-                        : dupePending
-                          ? "border-warning/40 bg-warning-bg text-warning"
-                          : "border-border bg-card text-foreground hover:bg-muted",
+                    "flex max-w-[16rem] items-center gap-1.5 truncate rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
+                    isCurrent ? "ring-2 ring-ring ring-offset-1 ring-offset-card" : "",
+                    tone,
                   )}
                 >
-                  {isSaved ? <Check className="h-3.5 w-3.5" strokeWidth={2.5} /> : null}
-                  {documentLabel(d, i)}
+                  {isSaved ? (
+                    <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={2.5} />
+                  ) : (
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 shrink-0 rounded-full",
+                        st.ready ? "bg-success" : st.severity === "block" ? "bg-danger" : "bg-warning",
+                      )}
+                    />
+                  )}
+                  <span className="truncate">{documentLabel(d, i)}</span>
                 </button>
               )
             })}
           </div>
         </div>
+      ) : null}
+
+      {/* Per-document status banner */}
+      {!saved[current] && currentStatus ? (
+        currentStatus.ready ? (
+          <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success-bg px-4 py-2.5 text-sm text-success">
+            <Check className="h-4 w-4" strokeWidth={2.5} />
+            Ready to import — everything looks confident.
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warning/30 bg-warning-bg px-4 py-2.5 text-sm text-warning">
+            <span className="font-medium">Needs attention:</span>
+            {currentStatus.reasons.map((r, i) => (
+              <span key={i} className="rounded bg-warning/15 px-1.5 py-0.5 text-xs">
+                {r}
+              </span>
+            ))}
+          </div>
+        )
       ) : null}
 
       {verdict && verdict.status !== "new" && !saved[current] ? (
@@ -608,6 +914,26 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
               placeholder="Supplier name"
               className={cn(inputCls, suppliers.length > 0 && "mt-2")}
             />
+          ) : null}
+          {/* Fuzzy match suggestion when we didn't auto-select a supplier. */}
+          {!draft.supplierId &&
+          draft.supplierMatch &&
+          draft.supplierMatch.supplierId != null &&
+          draft.supplierMatch.status !== "none" ? (
+            <button
+              type="button"
+              onClick={() =>
+                setDraft({ ...draft, supplierId: String(draft.supplierMatch!.supplierId) })
+              }
+              className="mt-2 flex items-center gap-1.5 text-left text-xs font-medium text-primary hover:underline"
+            >
+              Use existing supplier &ldquo;{draft.supplierMatch.supplierName}&rdquo;?
+            </button>
+          ) : null}
+          {draft.supplierId &&
+          draft.supplierMatch &&
+          (draft.supplierMatch.status === "exact" || draft.supplierMatch.status === "strong") ? (
+            <span className="mt-1.5 text-xs text-muted-foreground">Matched an existing supplier.</span>
           ) : null}
         </Field>
 
@@ -688,6 +1014,23 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
                 </button>
               </div>
 
+              {/* What the intelligence pass understood about this line. */}
+              {line.manufacturer || line.productType || line.dimensions || line.packageFromMemory ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {line.packageFromMemory ? (
+                    <span className="rounded-full border border-info/40 bg-info-bg px-2 py-0.5 text-[11px] font-medium text-info">
+                      Remembered
+                    </span>
+                  ) : null}
+                  {line.manufacturer ? <LineTag>{line.manufacturer}</LineTag> : null}
+                  {line.productType ? <LineTag>{line.productType}</LineTag> : null}
+                  {line.dimensions ? <LineTag>{line.dimensions}</LineTag> : null}
+                  {line.normalisedUnit && line.normalisedUnit !== line.unit ? (
+                    <LineTag>unit → {line.normalisedUnit}</LineTag>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <MiniField label="Qty">
                   <input
@@ -745,6 +1088,22 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
                       </option>
                     ))}
                   </select>
+                  {/* Suggest an unapplied package the reviewer can accept. */}
+                  {!line.costPackageId &&
+                  line.suggestedPackageId &&
+                  packages.some((p) => String(p.id) === line.suggestedPackageId) ? (
+                    <button
+                      type="button"
+                      onClick={() => updateLine(i, { costPackageId: line.suggestedPackageId! })}
+                      className="mt-1 text-left text-[11px] font-medium text-primary hover:underline"
+                    >
+                      Suggest:{" "}
+                      {packages.find((p) => String(p.id) === line.suggestedPackageId)?.name}
+                      {line.suggestConfidence && line.suggestConfidence !== "high"
+                        ? ` (${line.suggestConfidence})`
+                        : ""}
+                    </button>
+                  ) : null}
                 </MiniField>
                 <MiniField label="Category">
                   <input
@@ -764,6 +1123,11 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
                     />
                     <span className="text-sm text-muted-foreground">Add to price DB</span>
                   </label>
+                  {line.trackReason ? (
+                    <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                      {line.trackReason}
+                    </span>
+                  ) : null}
                 </MiniField>
               </div>
             </div>
@@ -922,6 +1286,71 @@ function documentLabel(d: Draft, index: number): string {
   return num || sup || `Document ${index + 1}`
 }
 
+export type DocStatus = {
+  /** true when nothing about this document needs a human decision. */
+  ready: boolean
+  /** short, human reasons the document needs attention (empty when ready). */
+  reasons: string[]
+  /** the most severe reason class, for colour-coding. */
+  severity: "ok" | "warn" | "block"
+}
+
+// Review-by-exception core: decide whether a document can be waved through or
+// needs a human. Everything genuinely ambiguous or risky surfaces here so a
+// reviewer can ignore the confident majority and only touch the exceptions.
+function docStatus(d: Draft): DocStatus {
+  const reasons: string[] = []
+  let severity: "ok" | "warn" | "block" = "ok"
+  const bump = (s: "warn" | "block") => {
+    if (s === "block" || severity === "ok") severity = s
+  }
+
+  const v = d.verdict?.status
+  if (v === "already_imported") {
+    reasons.push("Looks already imported")
+    bump("block")
+  } else if (v === "possible_duplicate" && !d.confirmedNew) {
+    reasons.push("Possible duplicate — confirm to import")
+    bump("block")
+  }
+
+  const hasSupplier = Boolean(d.supplierId || d.newSupplierName.trim())
+  if (!hasSupplier) {
+    reasons.push("No supplier")
+    bump("block")
+  } else if (!d.supplierId && d.supplierMatch && d.supplierMatch.status === "weak") {
+    reasons.push("Confirm supplier match")
+    bump("warn")
+  }
+
+  if (!d.invoiceNumber.trim()) {
+    reasons.push("No document number")
+    bump("warn")
+  }
+  if (!d.invoiceDate) {
+    reasons.push("No date")
+    bump("warn")
+  }
+  if (!d.gross || parseFloat(d.gross) === 0) {
+    reasons.push("No total")
+    bump("warn")
+  }
+  if (!d.reconciled) {
+    reasons.push("Totals don't reconcile")
+    bump("warn")
+  }
+  if (d.confidence === "low") {
+    reasons.push("Low extraction confidence")
+    bump("warn")
+  }
+  if (d.lines.length === 0 || d.lines.every((l) => !l.description.trim())) {
+    reasons.push("No line items")
+    bump("warn")
+  }
+
+  return { ready: reasons.length === 0, reasons, severity }
+}
+
 function buildSummaryData(outcomes: BatchOutcome[], files: FileProgress[]): BatchSummaryData {
   const suppliers = new Set<string>()
   let invoicesAdded = 0
@@ -982,5 +1411,33 @@ function MiniField({ label, children }: { label: string; children: React.ReactNo
       </span>
       {children}
     </label>
+  )
+}
+
+function LineTag({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+      {children}
+    </span>
+  )
+}
+
+function StatusPill({
+  tone,
+  children,
+}: {
+  tone: "success" | "warning" | "info"
+  children: React.ReactNode
+}) {
+  const cls =
+    tone === "success"
+      ? "border-success/40 bg-success-bg text-success"
+      : tone === "warning"
+        ? "border-warning/40 bg-warning-bg text-warning"
+        : "border-info/40 bg-info-bg text-info"
+  return (
+    <span className={cn("rounded-full border px-2.5 py-0.5 text-xs font-medium", cls)}>
+      {children}
+    </span>
   )
 }

@@ -7,10 +7,13 @@ import {
   invoices,
   invoiceLineItems,
   priceRecords,
+  supplierAliases,
+  classificationMappings,
 } from "@/lib/db/schema"
 import { and, eq, ilike, sql } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { normaliseSupplierName, normaliseDocNumber } from "@/lib/invoice-identity"
+import { normaliseDescriptionKey } from "@/lib/normalisation/products"
 import {
   classifyAgainst,
   type DocFingerprint,
@@ -22,20 +25,38 @@ export type CommitLineItem = {
   description: string
   quantity: number | null
   unit: string | null
+  /** canonical Gilbert OS unit; never alters quantity/price */
+  normalisedUnit?: string | null
   unitPriceExVat: number | null
   lineNet: number
   vatRate: number | null
   costPackageId: number | null
+  /** learned mapping context: package code/name so learning reapplies across projects */
+  costPackageCode?: string | null
+  costPackageName?: string | null
   productId: number | null
   /** when true and productId is null, create a new tracked product from the description */
   trackAsProduct: boolean
+  /** whether to add this line to the procurement price database */
+  isPriceTracked?: boolean
   newProductName?: string | null
   newProductCategory?: string | null
+  /** structured normalisation captured for a newly-created product */
+  normalisedProduct?: {
+    normalisedName?: string | null
+    productFamily?: string | null
+    productType?: string | null
+    dimensions?: string | null
+    thickness?: string | null
+    subcategory?: string | null
+  } | null
 }
 
 export type CommitInvoiceInput = {
   supplierId: number | null
   newSupplierName: string | null
+  /** the raw supplier heading as printed on the document, for alias learning */
+  rawSupplierHeading?: string | null
   projectId: number | null
   invoiceNumber: string | null
   invoiceDate: string | null
@@ -49,6 +70,14 @@ export type CommitInvoiceInput = {
   sourcePageStart: number | null
   sourcePageEnd: number | null
   notes: string | null
+  /** original AI extraction retained for audit (what the model first read) */
+  extractionRaw?: unknown
+  /** model self-reported extraction confidence */
+  confidence?: "high" | "medium" | "low" | null
+  /** whether totals/line arithmetic reconciled at review time */
+  reconciled?: boolean
+  /** whether this document was committed while still needing attention */
+  needsReview?: boolean
   lineItems: CommitLineItem[]
 }
 
@@ -177,6 +206,20 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
         }
       }
 
+      // For a credit note, try to link the original invoice it relates to:
+      // same supplier + same normalised number is the confident case.
+      let creditOfInvoiceId: number | null = null
+      if (input.transactionType === "credit" && nNumber) {
+        const originals = await tx.execute(sql`
+          SELECT inv.id, inv.invoice_number FROM invoices inv
+          WHERE inv.supplier_id = ${supplierId} AND inv.transaction_type = 'invoice'
+        `)
+        const match = (originals.rows as any[]).find(
+          (r) => normaliseDocNumber(r.invoice_number) === nNumber,
+        )
+        creditOfInvoiceId = match ? Number(match.id) : null
+      }
+
       const [invoice] = await tx
         .insert(invoices)
         .values({
@@ -195,6 +238,11 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
           sourcePageStart: input.sourcePageStart,
           sourcePageEnd: input.sourcePageEnd,
           notes: input.notes,
+          extractionRaw: (input.extractionRaw ?? null) as any,
+          confidence: input.confidence ?? null,
+          creditOfInvoiceId,
+          needsReview: input.needsReview ?? false,
+          reconciled: input.reconciled ?? true,
         })
         .returning()
 
@@ -208,13 +256,20 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
             if (existing[0]) {
               productId = existing[0].id
             } else {
+              const np = li.normalisedProduct ?? {}
               const [created] = await tx
                 .insert(products)
                 .values({
                   name: pname,
                   description: li.description,
-                  category: li.newProductCategory ?? null,
-                  unit: li.unit ?? null,
+                  category: li.newProductCategory ?? np.subcategory ?? null,
+                  unit: li.normalisedUnit ?? li.unit ?? null,
+                  normalisedName: np.normalisedName ?? null,
+                  productFamily: np.productFamily ?? null,
+                  productType: np.productType ?? null,
+                  dimensions: np.dimensions ?? null,
+                  thickness: np.thickness ?? null,
+                  subcategory: np.subcategory ?? null,
                 })
                 .returning()
               productId = created.id
@@ -226,6 +281,8 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
         const lineNet = sign * Math.abs(li.lineNet)
         const lineVat = Math.round(lineNet * (vatRate / 100) * 100) / 100
         const lineGross = lineNet + lineVat
+        // Only genuine materials with a product + price feed procurement pricing.
+        const priceTracked = li.isPriceTracked !== false
 
         const [lineItem] = await tx
           .insert(invoiceLineItems)
@@ -234,18 +291,28 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
             productId: productId ?? null,
             costPackageId: li.costPackageId,
             description: li.description,
+            rawDescription: li.description,
             quantity: li.quantity == null ? null : String(li.quantity),
             unit: li.unit,
+            rawUnit: li.unit,
+            normalisedUnit: li.normalisedUnit ?? null,
             unitPriceExVat: li.unitPriceExVat == null ? null : String(li.unitPriceExVat),
             lineNet: String(lineNet),
             lineVat: String(lineVat),
             lineGross: String(lineGross),
             vatRate: String(vatRate),
+            isPriceTracked: priceTracked,
           })
           .returning()
 
-        // Derive a price record when we have a tracked product and a unit price
-        if (productId && li.unitPriceExVat != null && input.transactionType === "invoice") {
+        // Derive a price record when we have a tracked product, a unit price,
+        // this is an invoice (not a credit), and the line is flagged for tracking.
+        if (
+          productId &&
+          priceTracked &&
+          li.unitPriceExVat != null &&
+          input.transactionType === "invoice"
+        ) {
           const priceEx = Math.abs(li.unitPriceExVat)
           const vatAmount = Math.round(priceEx * (vatRate / 100) * 100) / 100
           await tx.insert(priceRecords).values({
@@ -259,11 +326,52 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
             priceIncVat: String(priceEx + vatAmount),
             vatRate: String(vatRate),
             unit: li.unit,
+            normalisedUnit: li.normalisedUnit ?? null,
             invoiceDate: input.invoiceDate || null,
             invoiceNumber: input.invoiceNumber,
             transactionType: input.transactionType,
           })
         }
+
+        // Record the learned classification so the same line is pre-filled next
+        // time. Keyed by product id where known, else by normalised description.
+        if (li.costPackageCode || li.costPackageName || li.newProductCategory || li.normalisedUnit) {
+          const key = productId ? `p:${productId}` : normaliseDescriptionKey(li.description)
+          const keyKind = productId ? "product" : "description"
+          if (key) {
+            await tx.execute(sql`
+              INSERT INTO classification_mappings
+                (key_kind, key_value, supplier_id, product_id, cost_package_code,
+                 cost_package_name, category, normalised_unit, track_as_product, times_confirmed)
+              VALUES
+                (${keyKind}, ${key}, ${supplierId}, ${productId ?? null},
+                 ${li.costPackageCode ?? null}, ${li.costPackageName ?? null},
+                 ${li.newProductCategory ?? null}, ${li.normalisedUnit ?? null},
+                 ${li.trackAsProduct}, 1)
+              ON CONFLICT (key_kind, key_value, (coalesce(supplier_id, 0)))
+              DO UPDATE SET
+                cost_package_code = COALESCE(EXCLUDED.cost_package_code, classification_mappings.cost_package_code),
+                cost_package_name = COALESCE(EXCLUDED.cost_package_name, classification_mappings.cost_package_name),
+                category = COALESCE(EXCLUDED.category, classification_mappings.category),
+                normalised_unit = COALESCE(EXCLUDED.normalised_unit, classification_mappings.normalised_unit),
+                track_as_product = EXCLUDED.track_as_product,
+                times_confirmed = classification_mappings.times_confirmed + 1,
+                updated_at = now()
+            `)
+          }
+        }
+      }
+
+      // Learn the supplier heading → supplier mapping so cosmetic name
+      // variations resolve instantly (and don't spawn duplicate suppliers).
+      const rawSupplierName = (input.rawSupplierHeading ?? input.newSupplierName ?? "").trim()
+      const supNorm = normaliseSupplierName(rawSupplierName)
+      if (supNorm) {
+        await tx.execute(sql`
+          INSERT INTO supplier_aliases (supplier_id, normalised_name, raw_name)
+          VALUES (${supplierId}, ${supNorm}, ${rawSupplierName || null})
+          ON CONFLICT (normalised_name) DO NOTHING
+        `)
       }
 
       return { status: "committed", invoiceId: invoice.id }

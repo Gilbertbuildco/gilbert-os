@@ -63,6 +63,7 @@ export const invoices = pgTable("invoices", {
   gross: numeric("gross").notNull().default("0"),
   status: text("status").notNull().default("confirmed"),
   sourceFileName: text("source_file_name"),
+  sourceFilePathname: text("source_file_pathname"),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })

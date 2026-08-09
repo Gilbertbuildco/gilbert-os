@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Upload, ReceiptText } from "lucide-react"
+import { Upload, ReceiptText, FileText } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { EmptyState } from "@/components/empty-state"
 import { StatusBadge } from "@/components/status-badge"
@@ -48,12 +48,13 @@ export default async function InvoicesPage() {
                   <th scope="col" className="px-4 py-2.5 text-right font-semibold">VAT</th>
                   <th scope="col" className="px-4 py-2.5 text-right font-semibold">Gross</th>
                   <th scope="col" className="px-4 py-2.5 text-left font-semibold">Type</th>
+                  <th scope="col" className="px-4 py-2.5 text-left font-semibold">Source</th>
                 </tr>
               </thead>
               <tbody>
                 {invoices.length === 0 ? (
                   <tr>
-                    <td colSpan={9} className="p-0">
+                    <td colSpan={10} className="p-0">
                       <EmptyState
                         className="rounded-none border-0"
                         icon={<ReceiptText className="h-5 w-5" strokeWidth={1.75} />}
@@ -93,6 +94,21 @@ export default async function InvoicesPage() {
                           <StatusBadge variant="warning">Credit</StatusBadge>
                         ) : (
                           <StatusBadge variant="success">Invoice</StatusBadge>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {inv.sourceFilePathname ? (
+                          <a
+                            href={`/api/invoice-file?pathname=${encodeURIComponent(inv.sourceFilePathname)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 text-primary hover:underline"
+                          >
+                            <FileText className="h-4 w-4" strokeWidth={1.75} />
+                            View
+                          </a>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
                         )}
                       </td>
                     </tr>

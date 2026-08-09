@@ -2,10 +2,15 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { Upload, Loader2, Trash2, Plus, FileText } from "lucide-react"
+import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
 import { StatusBadge } from "@/components/status-badge"
-import { extractInvoice, commitInvoice, type CommitLineItem } from "@/app/actions/invoices"
+import {
+  extractInvoice,
+  commitInvoice,
+  type CommitLineItem,
+  type ExtractedInvoice,
+} from "@/app/actions/invoices"
 import { fetchCostPackages } from "@/app/actions/lookups"
 
 type ProjectOption = { id: number; name: string; slug: string }
@@ -59,31 +64,28 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   const router = useRouter()
   const [step, setStep] = useState<"upload" | "review">("upload")
   const [fileName, setFileName] = useState<string | null>(null)
+  const [sourcePathname, setSourcePathname] = useState<string | null>(null)
   const [extracting, setExtracting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [packages, setPackages] = useState<PackageOption[]>([])
-  const [draft, setDraft] = useState<Draft | null>(null)
+  // When a file contains several documents we hold them all here and step
+  // through one at a time. `drafts` is the working copy for each document and
+  // `saved` marks which have already been committed to the database.
+  const [drafts, setDrafts] = useState<Draft[]>([])
+  const [saved, setSaved] = useState<boolean[]>([])
+  const [current, setCurrent] = useState(0)
   const [saving, startSaving] = useTransition()
 
-  async function handleFile(file: File) {
-    setError(null)
-    setExtracting(true)
-    setFileName(file.name)
-    const fd = new FormData()
-    fd.append("file", file)
-    const result = await extractInvoice(fd)
-    setExtracting(false)
+  const draft = drafts[current] ?? null
+  const total = drafts.length
+  const savedCount = saved.filter(Boolean).length
 
-    if (!result.ok) {
-      setError(result.error)
-      // Still allow manual entry
-      setDraft(blankDraft())
-      setStep("review")
-      return
-    }
+  function setDraft(next: Draft) {
+    setDrafts((prev) => prev.map((d, i) => (i === current ? next : d)))
+  }
 
-    const d = result.data
-    setDraft({
+  function draftFromDocument(d: ExtractedInvoice): Draft {
+    return {
       supplierId: "",
       newSupplierName: d.supplierName ?? "",
       projectId: "",
@@ -105,7 +107,34 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         trackAsProduct: true,
         productCategory: "",
       })),
-    })
+    }
+  }
+
+  async function handleFile(file: File) {
+    setError(null)
+    setExtracting(true)
+    setFileName(file.name)
+    const fd = new FormData()
+    fd.append("file", file)
+    const result = await extractInvoice(fd)
+    setExtracting(false)
+
+    if (!result.ok) {
+      setError(result.error)
+      // Still allow manual entry
+      setSourcePathname(null)
+      setDrafts([blankDraft()])
+      setSaved([false])
+      setCurrent(0)
+      setStep("review")
+      return
+    }
+
+    setSourcePathname(result.sourceFilePathname)
+    const nextDrafts = result.documents.map(draftFromDocument)
+    setDrafts(nextDrafts)
+    setSaved(nextDrafts.map(() => false))
+    setCurrent(0)
     setStep("review")
   }
 
@@ -214,15 +243,34 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           vat: parseFloat(draft.vat) || 0,
           gross: parseFloat(draft.gross) || 0,
           sourceFileName: fileName,
+          sourceFilePathname: sourcePathname,
           notes: draft.notes.trim() || null,
           lineItems: payloadLines,
         })
-        router.push("/invoices")
-        router.refresh()
+
+        const nextSaved = saved.map((s, i) => (i === current ? true : s))
+        setSaved(nextSaved)
+
+        // Move to the next document that still needs saving, if any.
+        const nextIndex = nextSaved.findIndex((s) => !s)
+        if (nextIndex === -1) {
+          router.push("/invoices")
+          router.refresh()
+        } else {
+          setError(null)
+          setPackages([])
+          setCurrent(nextIndex)
+        }
       } catch (e) {
         setError((e as Error).message || "Something went wrong while saving.")
       }
     })
+  }
+
+  function goToDocument(index: number) {
+    setError(null)
+    setPackages([])
+    setCurrent(index)
   }
 
   if (step === "upload") {
@@ -233,16 +281,19 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-5">
           <h2 className="text-sm font-semibold text-foreground">How this works</h2>
           <ol className="flex flex-col gap-1.5 text-sm text-muted-foreground">
-            <li>1. Upload a supplier invoice or credit note (PDF or image).</li>
-            <li>2. We read the supplier, totals and line items automatically.</li>
-            <li>3. Review and correct everything, assign a project and cost packages.</li>
+            <li>1. Upload a file (PDF or image). It can contain more than one invoice or credit note.</li>
+            <li>2. We keep the original document and read the supplier, totals and line items automatically.</li>
+            <li>3. Review each detected document, assign a project and cost packages.</li>
             <li>4. Confirm — spend, price history and supplier records update instantly.</li>
           </ol>
         </div>
         <button
           type="button"
           onClick={() => {
-            setDraft(blankDraft())
+            setSourcePathname(null)
+            setDrafts([blankDraft()])
+            setSaved([false])
+            setCurrent(0)
             setStep("review")
           }}
           className="text-sm font-medium text-primary hover:underline"
@@ -268,6 +319,52 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           <FileText className="h-4 w-4" strokeWidth={1.75} />
           {fileName}
           {extracting ? <StatusBadge variant="info">Reading…</StatusBadge> : null}
+        </div>
+      ) : null}
+
+      {total > 1 ? (
+        <div className="flex flex-col gap-3 rounded-lg border border-info/30 bg-info-bg px-4 py-3.5">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-foreground">
+              {total} documents detected in this file — {savedCount} of {total} saved
+            </p>
+            <span className="text-xs font-medium text-muted-foreground">
+              Reviewing {current + 1} of {total}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {drafts.map((d, i) => {
+              const isCurrent = i === current
+              const isSaved = saved[i]
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => goToDocument(i)}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
+                    isCurrent
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : isSaved
+                        ? "border-success/40 bg-success-bg text-success"
+                        : "border-border bg-card text-foreground hover:bg-muted",
+                  )}
+                >
+                  {isSaved ? <Check className="h-3.5 w-3.5" strokeWidth={2.5} /> : null}
+                  {d.invoiceNumber?.trim() ||
+                    d.newSupplierName?.trim() ||
+                    `Document ${i + 1}`}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {draft && saved[current] ? (
+        <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success-bg px-4 py-3 text-sm text-success">
+          <Check className="h-4 w-4" strokeWidth={2.5} />
+          This document has already been saved.
         </div>
       ) : null}
 
@@ -514,7 +611,16 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
             className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-60"
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} /> : null}
-            Confirm &amp; save
+            {saved[current]
+              ? "Save again"
+              : savedCount + 1 < total
+                ? "Save & next document"
+                : total > 1
+                  ? "Save last document"
+                  : "Confirm & save"}
+            {!saving && !saved[current] && savedCount + 1 < total ? (
+              <ChevronRight className="h-4 w-4" strokeWidth={2} />
+            ) : null}
           </button>
         </div>
       </div>

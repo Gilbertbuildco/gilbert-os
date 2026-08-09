@@ -252,6 +252,8 @@ export type InvoiceRow = {
   gross: number
   status: string
   lineItemCount: number
+  sourceFileName: string | null
+  sourceFilePathname: string | null
 }
 
 export async function getInvoices(): Promise<InvoiceRow[]> {
@@ -259,6 +261,7 @@ export async function getInvoices(): Promise<InvoiceRow[]> {
     SELECT inv.id, s.name AS supplier_name, p.name AS project_name,
       inv.invoice_number, inv.invoice_date, inv.transaction_type,
       inv.net, inv.vat, inv.gross, inv.status,
+      inv.source_file_name, inv.source_file_pathname,
       COALESCE(li.cnt, 0) AS line_item_count
     FROM invoices inv
     JOIN suppliers s ON s.id = inv.supplier_id
@@ -280,6 +283,8 @@ export async function getInvoices(): Promise<InvoiceRow[]> {
     gross: n(r.gross),
     status: r.status,
     lineItemCount: n(r.line_item_count),
+    sourceFileName: r.source_file_name ?? null,
+    sourceFilePathname: r.source_file_pathname ?? null,
   }))
 }
 
@@ -379,5 +384,9 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
     gross: n(r.gross),
     status: r.status,
     lineItemCount: n(r.line_item_count),
+    sourceFileName: null,
+    sourceFilePathname: null,
   }))
 }
+
+

@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@vercel/blob": "^2.7.0",
     "ai": "^7.0.58",
     "clsx": "^2.1.1",
     "drizzle-orm": "^0.45.2",

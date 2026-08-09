@@ -11,6 +11,7 @@ import {
 import { and, eq, ilike } from "drizzle-orm"
 import { generateObject } from "ai"
 import { z } from "zod"
+import { put } from "@vercel/blob"
 import { revalidatePath } from "next/cache"
 
 // Vision-capable models available on the zero-config AI Gateway. We try them
@@ -28,7 +29,7 @@ const lineItemSchema = z.object({
   vatRate: z.number().nullable().describe("VAT rate as a percentage e.g. 20, 5, 0"),
 })
 
-const extractionSchema = z.object({
+const documentSchema = z.object({
   supplierName: z.string().describe("The name of the merchant/supplier issuing the document"),
   invoiceNumber: z.string().nullable().describe("Invoice or credit note number"),
   invoiceDate: z
@@ -46,10 +47,21 @@ const extractionSchema = z.object({
   }),
 })
 
-export type ExtractedInvoice = z.infer<typeof extractionSchema>
+// A single file may contain more than one distinct invoice or credit note
+// (e.g. a scanned batch or a merchant statement). We ask the model to return
+// every distinct document it finds.
+const extractionSchema = z.object({
+  documents: z
+    .array(documentSchema)
+    .describe(
+      "Every distinct invoice or credit note found in the file. If the file contains only one document, return an array with one entry.",
+    ),
+})
+
+export type ExtractedInvoice = z.infer<typeof documentSchema>
 
 export type ExtractionResult =
-  | { ok: true; data: ExtractedInvoice; fileName: string }
+  | { ok: true; documents: ExtractedInvoice[]; fileName: string; sourceFilePathname: string | null }
   | { ok: false; error: string }
 
 /**
@@ -66,16 +78,36 @@ export async function extractInvoice(formData: FormData): Promise<ExtractionResu
   const bytes = new Uint8Array(await file.arrayBuffer())
   const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg")
 
+  // Retain the original document in private Blob storage before extraction so
+  // the source is always kept, even if the review is abandoned partway.
+  let sourceFilePathname: string | null = null
+  try {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
+    const blob = await put(`invoices/${Date.now()}-${safeName}`, Buffer.from(bytes), {
+      access: "private",
+      contentType: mediaType,
+    })
+    sourceFilePathname = blob.pathname
+  } catch (err) {
+    console.log("[v0] failed to retain original invoice file:", (err as Error).message)
+  }
+
   const instructions =
-    "You are a construction accounts assistant. Extract supplier invoices and credit notes into structured data. " +
-    "Read every line item. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless stated otherwise. " +
-    "Never invent line items that are not on the document. If a value is missing, use null."
+    "You are a construction accounts assistant. A single uploaded file may contain one OR MORE separate " +
+    "invoices or credit notes (for example a scanned batch or a supplier statement covering several documents). " +
+    "Identify every distinct document and return each as its own entry in the 'documents' array. " +
+    "Treat a new invoice/credit note number, a new document header, or a restarted totals block as a new document. " +
+    "Read every line item for each. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless " +
+    "stated otherwise. Never invent line items or documents that are not present. If a value is missing, use null."
 
   const messages = [
     {
       role: "user" as const,
       content: [
-        { type: "text" as const, text: "Extract this supplier document into the required schema." },
+        {
+          type: "text" as const,
+          text: "Extract every invoice and credit note in this file into the required schema.",
+        },
         { type: "file" as const, data: bytes, mediaType, filename: file.name },
       ],
     },
@@ -89,7 +121,14 @@ export async function extractInvoice(formData: FormData): Promise<ExtractionResu
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const { object } = await generateObject({ model, schema: extractionSchema, instructions, messages })
-        return { ok: true, data: object, fileName: file.name }
+        const documents = (object.documents ?? []).filter((d) => d && d.supplierName)
+        if (documents.length === 0) {
+          return {
+            ok: false,
+            error: "No invoice could be read from that file. You can still enter the details manually below.",
+          }
+        }
+        return { ok: true, documents, fileName: file.name, sourceFilePathname }
       } catch (err) {
         const message = (err as Error).message ?? ""
         lastError = message
@@ -142,6 +181,7 @@ export type CommitInvoiceInput = {
   vat: number
   gross: number
   sourceFileName: string | null
+  sourceFilePathname: string | null
   notes: string | null
   lineItems: CommitLineItem[]
 }
@@ -184,6 +224,7 @@ export async function commitInvoice(input: CommitInvoiceInput) {
       gross: String(sign * Math.abs(input.gross)),
       status: "confirmed",
       sourceFileName: input.sourceFileName,
+      sourceFilePathname: input.sourceFilePathname,
       notes: input.notes,
     })
     .returning()

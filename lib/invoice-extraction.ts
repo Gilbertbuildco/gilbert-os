@@ -2,10 +2,31 @@ import { createHash } from "node:crypto"
 import { generateObject } from "ai"
 import { z } from "zod"
 import { put } from "@vercel/blob"
+import { PDFDocument } from "pdf-lib"
 
 // Vision-capable models available on the zero-config AI Gateway. We try them
 // in order so a rate-limit or availability issue on one falls back to another.
 const EXTRACTION_MODELS = ["google/gemini-2.5-flash", "google/gemini-2.5-flash-lite"]
+
+// --- Robustness tuning -------------------------------------------------------
+// PDFs with at most this many pages are read in a single request (unchanged
+// behaviour, preserves the extraction quality we already validated). Larger
+// files are split into page windows and reconstructed.
+const MAX_SINGLE_SHOT_PAGES = 8
+// Page-window size and overlap for large PDFs. Overlap guarantees an invoice
+// that straddles a window boundary still appears whole in one window; the
+// merge step then de-duplicates it.
+const CHUNK_PAGES = 4
+const CHUNK_OVERLAP = 1
+// Per model-call timeout so a single stuck request can't consume the whole
+// serverless budget. The route's maxDuration must comfortably exceed this.
+const PER_ATTEMPT_TIMEOUT_MS = 55_000
+// How many backoff attempts we make per model for a TRANSIENT failure.
+const MAX_TRANSIENT_ATTEMPTS = 4
+// Wall-clock budget for processing one (possibly chunked) file. If a large PDF
+// can't finish every page within this, we return what we read plus `incomplete`
+// rather than failing the whole file.
+const FILE_DEADLINE_MS = 280_000
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -62,6 +83,20 @@ const extractionSchema = z.object({
 
 export type ExtractedInvoice = z.infer<typeof documentSchema>
 
+// Structured, machine-readable reason a file could not be read. The user-facing
+// UI stays simple, but this is logged and attached so failures are diagnosable
+// and so retry logic can treat transient vs permanent differently.
+export type ExtractionErrorReason =
+  | "rate_limit"
+  | "timeout"
+  | "too_large"
+  | "no_document"
+  | "invalid_response"
+  | "gateway"
+  | "empty_file"
+  | "unreadable_pdf"
+  | "unknown"
+
 export type ExtractionResult =
   | {
       ok: true
@@ -69,23 +104,175 @@ export type ExtractionResult =
       fileName: string
       sourceFilePathname: string | null
       sourceFileHash: string | null
+      /** Total pages in the source PDF (null for images / unknown). */
+      pageCount: number | null
+      /** True when a large PDF could not be fully read within the time budget. */
+      incomplete?: boolean
+      /** 1-based page the read stopped at when incomplete. */
+      truncatedAtPage?: number | null
     }
-  | { ok: false; error: string; fileName: string }
+  | {
+      ok: false
+      error: string
+      errorReason: ExtractionErrorReason
+      fileName: string
+      /** Whether a retry could plausibly succeed (rate limit, timeout, gateway). */
+      retryable: boolean
+      sourceFilePathname: string | null
+      sourceFileHash: string | null
+    }
+
+// --- Error classification ----------------------------------------------------
+
+function classifyError(message: string): { reason: ExtractionErrorReason; retryable: boolean } {
+  const m = message.toLowerCase()
+  if (/rate.?limit|429|quota|too many requests|resource[_ ]exhausted/.test(m))
+    return { reason: "rate_limit", retryable: true }
+  if (/timeout|timed out|aborted|deadline|etimedout/.test(m)) return { reason: "timeout", retryable: true }
+  if (/413|payload too large|request entity too large|context length|token|maximum.*size|too large/.test(m))
+    return { reason: "too_large", retryable: false }
+  if (/5\d\d|gateway|unavailable|overloaded|econnreset|network|fetch failed/.test(m))
+    return { reason: "gateway", retryable: true }
+  if (/schema|parse|invalid json|no object generated|could not parse|validation/.test(m))
+    return { reason: "invalid_response", retryable: true }
+  return { reason: "unknown", retryable: true }
+}
+
+/** Extract retry-after seconds from an error message/headers if present. */
+function retryAfterMs(message: string): number | null {
+  const m = message.match(/retry[- ]after[":\s]+(\d+)/i)
+  if (m) return Math.min(parseInt(m[1], 10) * 1000, 65_000)
+  return null
+}
+
+const INSTRUCTIONS =
+  "You are a construction accounts assistant. A single uploaded file may contain one OR MORE separate " +
+  "invoices or credit notes (for example a scanned batch or a supplier statement covering several documents). " +
+  "Identify every distinct document and return each as its own entry in the 'documents' array. " +
+  "Treat a new invoice/credit note number, a new document header, or a restarted totals block as a new document. " +
+  "For each document, report the 1-based page range it occupies within the file via pageStart and pageEnd " +
+  "(a single-page invoice has pageStart === pageEnd; a document spanning pages 3 to 4 has pageStart 3 and pageEnd 4). " +
+  "Read every line item for each. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless " +
+  "stated otherwise. Never invent line items or documents that are not present. If a value is missing, use null."
+
+/**
+ * One structured extraction call against a set of PDF/image bytes, with our own
+ * exponential-backoff retry loop across the model fallback list. Throws a final
+ * Error (with a classifiable message) only if every attempt fails.
+ */
+async function extractBytes(bytes: Uint8Array, mediaType: string, fileName: string): Promise<ExtractedInvoice[]> {
+  const messages = [
+    {
+      role: "user" as const,
+      content: [
+        { type: "text" as const, text: "Extract every invoice and credit note in this file into the required schema." },
+        { type: "file" as const, data: bytes, mediaType, filename: fileName },
+      ],
+    },
+  ]
+
+  let lastError = "unknown error"
+
+  for (const model of EXTRACTION_MODELS) {
+    for (let attempt = 0; attempt < MAX_TRANSIENT_ATTEMPTS; attempt++) {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), PER_ATTEMPT_TIMEOUT_MS)
+      try {
+        const { object } = await generateObject({
+          model,
+          schema: extractionSchema,
+          instructions: INSTRUCTIONS,
+          messages,
+          // We own retries below so we control the backoff timing precisely.
+          maxRetries: 0,
+          abortSignal: controller.signal,
+        })
+        clearTimeout(timer)
+        return (object.documents ?? []).filter((d) => d && d.supplierName)
+      } catch (err) {
+        clearTimeout(timer)
+        const message = (err as Error).message ?? String(err)
+        lastError = message
+        const { reason, retryable } = classifyError(message)
+        console.log(`[v0] extraction attempt failed model=${model} attempt=${attempt} reason=${reason}: ${message}`)
+
+        if (!retryable) break // permanent for this model (e.g. too_large) — try next model or give up
+
+        // Exponential backoff with full jitter; honour retry-after for rate limits.
+        const isLast = attempt === MAX_TRANSIENT_ATTEMPTS - 1
+        if (!isLast) {
+          const base = reason === "rate_limit" ? 8_000 : 1_000
+          const explicit = retryAfterMs(message)
+          const backoff = explicit ?? Math.min(base * 2 ** attempt, 60_000)
+          const jittered = Math.round(backoff / 2 + Math.random() * (backoff / 2))
+          console.log(`[v0] backing off ${jittered}ms before retry`)
+          await sleep(jittered)
+          continue
+        }
+      }
+    }
+  }
+
+  throw new Error(lastError)
+}
+
+/** Copy a page range [start,end] (1-based, inclusive) of a PDF into new bytes. */
+async function slicePdf(src: PDFDocument, startPage1: number, endPage1: number): Promise<Uint8Array> {
+  const out = await PDFDocument.create()
+  const indices: number[] = []
+  for (let p = startPage1; p <= endPage1; p++) indices.push(p - 1)
+  const copied = await out.copyPages(src, indices)
+  for (const pg of copied) out.addPage(pg)
+  return out.save()
+}
+
+/** De-duplicate documents merged from overlapping page windows. */
+function mergeDocuments(docs: ExtractedInvoice[]): ExtractedInvoice[] {
+  const byKey = new Map<string, ExtractedInvoice>()
+  for (const d of docs) {
+    const key = [
+      (d.supplierName ?? "").trim().toLowerCase(),
+      d.transactionType,
+      (d.invoiceNumber ?? "").trim().toLowerCase(),
+      d.totals?.gross ?? "",
+    ].join("|")
+    const existing = byKey.get(key)
+    if (!existing) {
+      byKey.set(key, d)
+      continue
+    }
+    // Keep the richer copy (more line items), and widen the page range.
+    const better = (d.lineItems?.length ?? 0) > (existing.lineItems?.length ?? 0) ? d : existing
+    const other = better === d ? existing : d
+    better.pageStart = Math.min(better.pageStart ?? Infinity, other.pageStart ?? Infinity)
+    better.pageEnd = Math.max(better.pageEnd ?? 0, other.pageEnd ?? 0)
+    if (!Number.isFinite(better.pageStart!)) better.pageStart = null
+    if (!better.pageEnd) better.pageEnd = null
+    byKey.set(key, better)
+  }
+  // Stable order by page then supplier.
+  return [...byKey.values()].sort((a, b) => (a.pageStart ?? 0) - (b.pageStart ?? 0))
+}
 
 /**
  * Read an uploaded PDF/image, retain the original in Blob storage, and extract
  * one or more structured documents with a vision model. Nothing is written to
  * the database here — the caller reviews and confirms before committing.
+ *
+ * Robustness: transient failures (rate limits, gateway errors, timeouts) are
+ * retried with exponential backoff; large PDFs are split into page windows and
+ * reconstructed so a single oversized request can't fail or time out.
  */
 export async function extractDocumentsFromFile(file: File): Promise<ExtractionResult> {
   const bytes = new Uint8Array(await file.arrayBuffer())
-  const mediaType = file.type || (file.name.toLowerCase().endsWith(".pdf") ? "application/pdf" : "image/jpeg")
+  const isPdf = (file.type || "").includes("pdf") || file.name.toLowerCase().endsWith(".pdf")
+  const mediaType = file.type || (isPdf ? "application/pdf" : "image/jpeg")
 
   // Checksum of the exact bytes uploaded — a secondary duplicate signal.
   const sourceFileHash = createHash("sha256").update(Buffer.from(bytes)).digest("hex")
 
   // Retain the original document in Blob storage before extraction so the
-  // source is always kept, even if the review is abandoned partway.
+  // source is always kept, even if the review is abandoned or extraction fails.
   let sourceFilePathname: string | null = null
   try {
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_")
@@ -99,69 +286,126 @@ export async function extractDocumentsFromFile(file: File): Promise<ExtractionRe
     console.log("[v0] failed to retain original invoice file:", (err as Error).message)
   }
 
-  const instructions =
-    "You are a construction accounts assistant. A single uploaded file may contain one OR MORE separate " +
-    "invoices or credit notes (for example a scanned batch or a supplier statement covering several documents). " +
-    "Identify every distinct document and return each as its own entry in the 'documents' array. " +
-    "Treat a new invoice/credit note number, a new document header, or a restarted totals block as a new document. " +
-    "For each document, report the 1-based page range it occupies within the file via pageStart and pageEnd " +
-    "(a single-page invoice has pageStart === pageEnd; a document spanning pages 3 to 4 has pageStart 3 and pageEnd 4). " +
-    "Read every line item for each. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless " +
-    "stated otherwise. Never invent line items or documents that are not present. If a value is missing, use null."
-
-  const messages = [
-    {
-      role: "user" as const,
-      content: [
-        {
-          type: "text" as const,
-          text: "Extract every invoice and credit note in this file into the required schema.",
-        },
-        { type: "file" as const, data: bytes, mediaType, filename: file.name },
-      ],
-    },
-  ]
-
-  let rateLimited = false
-  let lastError = ""
-
-  for (const model of EXTRACTION_MODELS) {
-    // Up to two attempts per model to absorb transient free-tier rate limits.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const { object } = await generateObject({ model, schema: extractionSchema, instructions, messages })
-        const documents = (object.documents ?? []).filter((d) => d && d.supplierName)
-        if (documents.length === 0) {
-          return {
-            ok: false,
-            error: "No invoice could be read from that file. You can still enter the details manually below.",
-            fileName: file.name,
-          }
-        }
-        return { ok: true, documents, fileName: file.name, sourceFilePathname, sourceFileHash }
-      } catch (err) {
-        const message = (err as Error).message ?? ""
-        lastError = message
-        const isRateLimit = /rate.?limit|429/i.test(message)
-        console.log(`[v0] extraction attempt failed (${model}):`, message)
-        if (isRateLimit) {
-          rateLimited = true
-          if (attempt === 0) {
-            await sleep(1500)
-            continue
-          }
-        }
-        break // non-rate-limit error, or already retried — move to next model
-      }
+  if (bytes.byteLength === 0) {
+    return {
+      ok: false,
+      error: "That file was empty. You can enter the details manually below.",
+      errorReason: "empty_file",
+      retryable: false,
+      fileName: file.name,
+      sourceFilePathname,
+      sourceFileHash,
     }
   }
 
-  console.log("[v0] invoice extraction gave up:", lastError)
-  return {
-    ok: false,
-    error: rateLimited
-      ? "Automatic reading is temporarily rate-limited. Please wait a moment and try again, or enter the details manually below."
-      : "Could not read that document automatically. You can still enter the details manually below.",
-    fileName: file.name,
+  // Determine whether we can/should chunk a large PDF.
+  let pageCount: number | null = null
+  let pdfDoc: PDFDocument | null = null
+  if (isPdf) {
+    try {
+      pdfDoc = await PDFDocument.load(bytes, { ignoreEncryption: true })
+      pageCount = pdfDoc.getPageCount()
+    } catch (err) {
+      // Corrupt/encrypted PDF we can't split — fall back to a single-shot read
+      // of the raw bytes (never worse than before).
+      console.log("[v0] pdf-lib could not parse PDF, falling back to single-shot:", (err as Error).message)
+      pdfDoc = null
+    }
+  }
+
+  const finalize = (docs: ExtractedInvoice[], extra?: { incomplete?: boolean; truncatedAtPage?: number | null }) => {
+    if (docs.length === 0) {
+      return {
+        ok: false as const,
+        error: "No invoice could be read from that file. You can still enter the details manually below.",
+        errorReason: "no_document" as const,
+        retryable: false,
+        fileName: file.name,
+        sourceFilePathname,
+        sourceFileHash,
+      }
+    }
+    return {
+      ok: true as const,
+      documents: docs,
+      fileName: file.name,
+      sourceFilePathname,
+      sourceFileHash,
+      pageCount,
+      ...extra,
+    }
+  }
+
+  try {
+    // Small files (or non-PDF, or unparseable PDF): single-shot, unchanged path.
+    if (!pdfDoc || pageCount == null || pageCount <= MAX_SINGLE_SHOT_PAGES) {
+      const docs = await extractBytes(bytes, mediaType, file.name)
+      return finalize(docs)
+    }
+
+    // Large PDF: process overlapping page windows within a wall-clock budget,
+    // offsetting page numbers into the ORIGINAL file's coordinate space.
+    console.log(`[v0] large PDF (${pageCount} pages) — chunking into windows of ${CHUNK_PAGES}`)
+    const started = Date.now()
+    const step = Math.max(1, CHUNK_PAGES - CHUNK_OVERLAP)
+    const all: ExtractedInvoice[] = []
+    let truncatedAtPage: number | null = null
+
+    for (let start = 1; start <= pageCount; start += step) {
+      if (Date.now() - started > FILE_DEADLINE_MS) {
+        truncatedAtPage = start
+        console.log(`[v0] file deadline reached; stopping at page ${start} of ${pageCount}`)
+        break
+      }
+      const end = Math.min(start + CHUNK_PAGES - 1, pageCount)
+      let chunkBytes: Uint8Array
+      try {
+        chunkBytes = await slicePdf(pdfDoc, start, end)
+      } catch (err) {
+        console.log(`[v0] failed to slice pages ${start}-${end}:`, (err as Error).message)
+        continue
+      }
+      try {
+        const chunkDocs = await extractBytes(chunkBytes, "application/pdf", `${file.name}#p${start}-${end}`)
+        // Offset page numbers from chunk-local (1..CHUNK_PAGES) to absolute.
+        for (const d of chunkDocs) {
+          if (d.pageStart != null) d.pageStart = d.pageStart + (start - 1)
+          if (d.pageEnd != null) d.pageEnd = d.pageEnd + (start - 1)
+          // Clamp defensively into the real range.
+          if (d.pageStart != null) d.pageStart = Math.min(Math.max(d.pageStart, start), pageCount)
+          if (d.pageEnd != null) d.pageEnd = Math.min(Math.max(d.pageEnd, start), pageCount)
+        }
+        all.push(...chunkDocs)
+      } catch (err) {
+        // One bad window must not fail the whole file — log and keep going.
+        const { reason } = classifyError((err as Error).message)
+        console.log(`[v0] window ${start}-${end} failed (reason=${reason}); continuing`)
+      }
+      if (end >= pageCount) break
+    }
+
+    const merged = mergeDocuments(all)
+    return finalize(merged, truncatedAtPage ? { incomplete: true, truncatedAtPage } : undefined)
+  } catch (err) {
+    const message = (err as Error).message ?? String(err)
+    const { reason, retryable } = classifyError(message)
+    console.log(`[v0] invoice extraction gave up fileName="${file.name}" reason=${reason}: ${message}`)
+    const userError =
+      reason === "rate_limit"
+        ? "Automatic reading is temporarily rate-limited. It will retry automatically, or you can enter the details manually below."
+        : reason === "timeout"
+          ? "Reading this document took too long. You can retry it, or enter the details manually below."
+          : reason === "too_large"
+            ? "This document was too large to read in one pass. You can retry it, or enter the details manually below."
+            : "Could not read that document automatically. You can retry it, or enter the details manually below."
+    return {
+      ok: false,
+      error: userError,
+      errorReason: reason,
+      retryable,
+      fileName: file.name,
+      sourceFilePathname,
+      sourceFileHash,
+    }
   }
 }

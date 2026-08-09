@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useTransition } from "react"
+import { useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
 import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
@@ -36,6 +36,29 @@ type BatchOutcome = {
 type ProjectOption = { id: number; name: string; slug: string }
 type SupplierOption = { id: number; name: string }
 type PackageOption = { id: number; code: string | null; name: string }
+
+// How many files we read concurrently. Kept low so we never fire an unsafe
+// number of simultaneous AI extraction requests — the server-side exponential
+// backoff absorbs the rest. Raising this trades rate-limit headroom for speed.
+const BATCH_CONCURRENCY = 3
+
+// Bounded-concurrency worker pool. Each worker pulls the next index until the
+// queue drains; a worker never throws (the task swallows its own errors), so
+// one file's failure can never abort the others.
+async function runPool(count: number, concurrency: number, task: (index: number) => Promise<void>) {
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(concurrency, count) }, async () => {
+    while (cursor < count) {
+      const i = cursor++
+      try {
+        await task(i)
+      } catch {
+        // Defensive only — task is expected to handle its own errors.
+      }
+    }
+  })
+  await Promise.all(workers)
+}
 
 interface DraftLine {
   description: string
@@ -149,6 +172,16 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   const [saved, setSaved] = useState<boolean[]>([])
   const [current, setCurrent] = useState(0)
   const [saving, startSaving] = useTransition()
+  // Reading finished (all files attempted) — enables the failure actions.
+  const [readingDone, setReadingDone] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+  // The original File objects for the current batch, kept so failed files can
+  // be retried WITHOUT the user re-uploading the whole batch.
+  const batchFilesRef = useRef<File[]>([])
+  // Drafts collected per source-file index. `null` means that file has not yet
+  // produced any documents (still failing). Preserved across retries so
+  // successful files are never re-read or lost.
+  const collectedByFileRef = useRef<(Draft[] | null)[]>([])
 
   const draft = drafts[current] ?? null
   const total = drafts.length
@@ -199,8 +232,17 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     }
   }
 
-  // Read one file → its extracted documents (or a single manual-fallback draft).
-  async function readFile(file: File): Promise<Draft[]> {
+  // Read one file → a structured outcome. Never throws: on failure it returns
+  // the internal reason so the caller can decide whether to retry. The original
+  // file is retained in Blob storage server-side regardless of outcome.
+  async function readOneFile(file: File): Promise<{
+    drafts: Draft[] | null
+    documentCount: number
+    failed: boolean
+    errorReason?: string | null
+    retryable?: boolean
+    incomplete?: boolean
+  }> {
     let result: ExtractionResult
     try {
       const fd = new FormData()
@@ -208,58 +250,112 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       const res = await fetch("/api/extract-invoice", { method: "POST", body: fd })
       result = (await res.json()) as ExtractionResult
     } catch (err) {
+      // Network/transport failure talking to our own route — treat as retryable.
       console.log("[v0] upload/extraction request failed:", (err as Error).message)
-      // Manual-entry fallback seeded with the file so its source is still kept.
-      return [
-        {
-          ...blankDraft(),
-          sourceFileName: file.name,
-        },
-      ]
+      return { drafts: null, documentCount: 0, failed: true, errorReason: "gateway", retryable: true }
     }
 
     if (!result.ok) {
-      return [{ ...blankDraft(), sourceFileName: result.fileName }]
+      return {
+        drafts: null,
+        documentCount: 0,
+        failed: true,
+        errorReason: result.errorReason,
+        retryable: result.retryable,
+      }
     }
 
-    const source = {
-      fileName: result.fileName,
-      pathname: result.sourceFilePathname,
-      hash: result.sourceFileHash,
-    }
-    return result.documents.map((d) => draftFromDocument(d, source))
+    const source = { fileName: result.fileName, pathname: result.sourceFilePathname, hash: result.sourceFileHash }
+    const drafts = result.documents.map((d) => draftFromDocument(d, source))
+    return { drafts, documentCount: drafts.length, failed: false, incomplete: result.incomplete }
   }
 
-  // Batch entry point: read every selected file (sequentially, so we don't
-  // hammer the model), then classify all detected documents for duplicates
-  // before showing the review screen.
+  // Read a set of file indices with bounded concurrency, storing each file's
+  // result under its own index. Safe to re-invoke for only the still-failed
+  // indices, which is exactly how "Retry failed" preserves earlier successes.
+  async function processIndices(indices: number[]) {
+    const files = batchFilesRef.current
+    await runPool(indices.length, BATCH_CONCURRENCY, async (k) => {
+      const i = indices[k]
+      setFileProgress((prev) => prev.map((p, idx) => (idx === i ? { ...p, status: "reading" } : p)))
+      const outcome = await readOneFile(files[i])
+      collectedByFileRef.current[i] = outcome.failed ? null : outcome.drafts
+      setFileProgress((prev) =>
+        prev.map((p, idx) =>
+          idx === i
+            ? {
+                ...p,
+                status: outcome.failed ? "failed" : "done",
+                documentCount: outcome.documentCount,
+                errorReason: outcome.errorReason ?? null,
+                retryable: outcome.retryable,
+                incomplete: outcome.incomplete,
+              }
+            : p,
+        ),
+      )
+      setProcessedCount((c) => c + 1)
+    })
+  }
+
+  // Batch entry point: read every selected file with bounded concurrency. If
+  // everything succeeds we go straight into review; otherwise we hold on the
+  // reading screen so failures can be retried without re-uploading the batch.
   async function handleFiles(files: File[]) {
     if (files.length === 0) return
     setError(null)
     setExtracting(true)
     setStep("reading")
+    setReadingDone(false)
     setProcessedCount(0)
+    batchFilesRef.current = files
+    collectedByFileRef.current = files.map(() => null)
     setFileProgress(files.map((f) => ({ fileName: f.name, status: "pending", documentCount: 0 })))
 
-    const collected: Draft[] = []
-    for (let i = 0; i < files.length; i++) {
-      setFileProgress((prev) => prev.map((p, idx) => (idx === i ? { ...p, status: "reading" } : p)))
-      const draftsForFile = await readFile(files[i])
-      collected.push(...draftsForFile)
-      const failed = draftsForFile.every((d) => d.sourceFilePathname === null && d.verdict === null)
-      setFileProgress((prev) =>
-        prev.map((p, idx) =>
-          idx === i
-            ? { ...p, status: failed ? "failed" : "done", documentCount: draftsForFile.length }
-            : p,
-        ),
-      )
-      setProcessedCount(i + 1)
-    }
+    await processIndices(files.map((_, i) => i))
+    setReadingDone(true)
 
-    // Run the full intelligence pass: supplier matching, duplicate
-    // classification, normalisation, AI enrichment, learned-mapping recall and
-    // arithmetic validation. Best-effort — never blocks ingestion.
+    if (collectedByFileRef.current.some((d) => d === null)) {
+      // Hold on the reading screen; the user chooses Retry failed or Continue.
+      setExtracting(false)
+    } else {
+      await finishReading()
+    }
+  }
+
+  // Retry only the files that are still failing, preserving every document that
+  // was already read successfully. Proceeds to review if all failures clear.
+  async function retryFailed() {
+    const failedIndices = collectedByFileRef.current
+      .map((d, i) => (d === null ? i : -1))
+      .filter((i) => i >= 0)
+    if (failedIndices.length === 0) return
+    setRetrying(true)
+    setProcessedCount((c) => Math.max(0, c - failedIndices.length))
+    await processIndices(failedIndices)
+    setRetrying(false)
+    if (!collectedByFileRef.current.some((d) => d === null)) await finishReading()
+  }
+
+  // Give up on the remaining failures: seed a blank manual-entry draft for each
+  // (retaining today's fallback) and proceed to review with everything else.
+  async function continueWithFailures() {
+    const files = batchFilesRef.current
+    collectedByFileRef.current = collectedByFileRef.current.map((d, i) =>
+      d === null ? [{ ...blankDraft(), sourceFileName: files[i]?.name ?? null }] : d,
+    )
+    await finishReading()
+  }
+
+  // Flatten collected drafts in file order, then run the full intelligence pass:
+  // supplier matching, duplicate classification across ALL documents (including
+  // retried files and documents split out of a consolidated PDF), normalisation,
+  // AI enrichment, learned-mapping recall and arithmetic validation. Best-effort
+  // — never blocks ingestion.
+  async function finishReading() {
+    setExtracting(true)
+    const collected: Draft[] = collectedByFileRef.current.flatMap((d) => d ?? [])
+
     setEnriching(true)
     try {
       const intel = await prepareBatch(
@@ -662,6 +758,10 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     setOutcomes([])
     setFileProgress([])
     setCurrent(0)
+    setReadingDone(false)
+    setRetrying(false)
+    batchFilesRef.current = []
+    collectedByFileRef.current = []
   }
 
   if (step === "upload") {
@@ -698,7 +798,14 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   if (step === "reading") {
     return (
       <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-10">
-        <BatchProgress files={fileProgress} processed={processedCount} />
+        <BatchProgress
+          files={fileProgress}
+          processed={processedCount}
+          done={readingDone}
+          retrying={retrying}
+          onRetryFailed={retryFailed}
+          onContinue={continueWithFailures}
+        />
       </div>
     )
   }

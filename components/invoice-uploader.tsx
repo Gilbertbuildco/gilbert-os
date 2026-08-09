@@ -138,7 +138,20 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
 
   function updateLine(index: number, patch: Partial<DraftLine>) {
     if (!draft) return
-    const lines = draft.lines.map((l, i) => (i === index ? { ...l, ...patch } : l))
+    const lines = draft.lines.map((l, i) => {
+      if (i !== index) return l
+      const next = { ...l, ...patch }
+      // Auto-derive line net from qty × unit price when either changes and the
+      // user hasn't explicitly typed a line net in the same edit.
+      if (("quantity" in patch || "unitPriceExVat" in patch) && !("lineNet" in patch)) {
+        const qty = parseFloat(next.quantity)
+        const unit = parseFloat(next.unitPriceExVat)
+        if (!Number.isNaN(qty) && !Number.isNaN(unit)) {
+          next.lineNet = (qty * unit).toFixed(2)
+        }
+      }
+      return next
+    })
     setDraft({ ...draft, lines })
   }
 

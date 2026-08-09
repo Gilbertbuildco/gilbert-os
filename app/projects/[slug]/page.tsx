@@ -1,10 +1,12 @@
 import { notFound } from "next/navigation"
 import { ProjectDetail } from "@/components/project-detail"
-import { getProject, projects } from "@/lib/data"
+import {
+  getProjectBySlug,
+  getCostPackagesForProject,
+  getRecentInvoicesForProject,
+} from "@/lib/queries"
 
-export function generateStaticParams() {
-  return projects.map((project) => ({ slug: project.slug }))
-}
+export const dynamic = "force-dynamic"
 
 export default async function ProjectDetailPage({
   params,
@@ -12,11 +14,16 @@ export default async function ProjectDetailPage({
   params: Promise<{ slug: string }>
 }) {
   const { slug } = await params
-  const project = getProject(slug)
+  const project = await getProjectBySlug(slug)
 
   if (!project) {
     notFound()
   }
 
-  return <ProjectDetail project={project} />
+  const [packages, invoices] = await Promise.all([
+    getCostPackagesForProject(project.id),
+    getRecentInvoicesForProject(project.id),
+  ])
+
+  return <ProjectDetail project={project} packages={packages} invoices={invoices} />
 }

@@ -13,7 +13,7 @@ import { generateObject } from "ai"
 import { z } from "zod"
 import { revalidatePath } from "next/cache"
 
-const EXTRACTION_MODEL = "google/gemini-3.5-flash"
+const EXTRACTION_MODEL = "google/gemini-2.5-flash"
 
 const lineItemSchema = z.object({
   description: z.string().describe("The line item description exactly as printed"),
@@ -66,14 +66,11 @@ export async function extractInvoice(formData: FormData): Promise<ExtractionResu
     const { object } = await generateObject({
       model: EXTRACTION_MODEL,
       schema: extractionSchema,
+      instructions:
+        "You are a construction accounts assistant. Extract supplier invoices and credit notes into structured data. " +
+        "Read every line item. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless stated otherwise. " +
+        "Never invent line items that are not on the document. If a value is missing, use null.",
       messages: [
-        {
-          role: "system",
-          content:
-            "You are a construction accounts assistant. Extract supplier invoices and credit notes into structured data. " +
-            "Read every line item. Prices are in GBP. If VAT is charged at the standard UK rate assume 20% unless stated otherwise. " +
-            "Never invent line items that are not on the document. If a value is missing, use null.",
-        },
         {
           role: "user",
           content: [

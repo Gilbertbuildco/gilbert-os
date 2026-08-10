@@ -323,9 +323,35 @@ export async function getPortfolioStats(): Promise<PortfolioStats> {
   }
 }
 
-export async function getProjectOptions() {
-  const rows = await db.execute(sql`SELECT id, name, slug FROM projects ORDER BY name ASC`)
-  return (rows.rows as any[]).map((r) => ({ id: r.id as number, name: r.name as string, slug: r.slug as string }))
+export type ProjectOption = { id: number; name: string; slug: string; status: string }
+
+export async function getProjectOptions(): Promise<ProjectOption[]> {
+  const rows = await db.execute(sql`SELECT id, name, slug, status FROM projects ORDER BY name ASC`)
+  return (rows.rows as any[]).map((r) => ({
+    id: r.id as number,
+    name: r.name as string,
+    slug: r.slug as string,
+    status: (r.status as string) ?? "",
+  }))
+}
+
+/** The active/live projects, richer shape used for project matching. */
+export type ActiveProject = { id: number; name: string; slug: string; location: string | null }
+
+export async function getActiveProjects(): Promise<ActiveProject[]> {
+  // Status set kept in sync with lib/cost-plan ACTIVE_PROJECT_STATUSES and the
+  // portfolio stats query. Compared case-insensitively.
+  const rows = await db.execute(sql`
+    SELECT id, name, slug, location FROM projects
+    WHERE lower(status) IN ('on site','in progress','active')
+    ORDER BY name ASC
+  `)
+  return (rows.rows as any[]).map((r) => ({
+    id: r.id as number,
+    name: r.name as string,
+    slug: r.slug as string,
+    location: (r.location as string) ?? null,
+  }))
 }
 
 export type LineItemRow = {

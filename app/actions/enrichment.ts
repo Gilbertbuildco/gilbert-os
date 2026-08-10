@@ -17,7 +17,13 @@ import {
 } from "@/lib/normalisation/products"
 import { normaliseUnit } from "@/lib/normalisation/units"
 import { validateInvoiceArithmetic } from "@/lib/invoice-validation"
-import { getCostPackagesForProject } from "@/lib/queries"
+import { getActiveProjects } from "@/lib/queries"
+import {
+  STANDARD_COST_PLAN,
+  INSULATION_PACKAGE_NAME,
+  looksLikeInsulation,
+} from "@/lib/cost-plan"
+import { matchProject, type ProjectMatch } from "@/lib/project-matching"
 
 // ---------------------------------------------------------------------------
 // Types shared with the client review UI
@@ -32,6 +38,14 @@ export type PrepareLineInput = {
   vatRate: number | null
 }
 
+export type DocReferences = {
+  siteName: string | null
+  deliveryAddress: string | null
+  orderReference: string | null
+  purchaseOrder: string | null
+  customerReference: string | null
+}
+
 export type PrepareDocInput = {
   supplierName: string | null
   invoiceNumber: string | null
@@ -41,6 +55,8 @@ export type PrepareDocInput = {
   vat: number | null
   gross: number | null
   sourceFileHash: string | null
+  /** Identifying references used only for project matching (never financial). */
+  references?: DocReferences | null
   lines: PrepareLineInput[]
 }
 
@@ -65,6 +81,13 @@ export type LineIntelligence = {
   learnedPackageName: string | null
   /** true when a learned mapping (not just heuristics) drove these values. */
   fromMemory: boolean
+  // --- project-INDEPENDENT canonical cost-package classification ---
+  // The best-matching package from the STANDARD cost plan (by code + name),
+  // decided WITHOUT knowing the project. Retained so it can be applied the
+  // instant a project is resolved; an unknown project never blanks it out.
+  canonicalPackageCode: string | null
+  canonicalPackageName: string | null
+  canonicalConfidence: "high" | "medium" | "low" | "none"
 }
 
 export type DocIntelligence = {
@@ -72,6 +95,9 @@ export type DocIntelligence = {
   verdict: DuplicateVerdict
   reconciled: boolean
   reconIssues: string[]
+  /** Suggested project + confidence (project assignment is independent of
+   *  cost-package classification). */
+  projectMatch: ProjectMatch
   lines: LineIntelligence[]
 }
 
@@ -229,6 +255,9 @@ export async function prepareBatch(docs: PrepareDocInput[]): Promise<DocIntellig
         learnedPackageCode: null,
         learnedPackageName: null,
         fromMemory: false,
+        canonicalPackageCode: null,
+        canonicalPackageName: null,
+        canonicalConfidence: "none",
       }
     })
 

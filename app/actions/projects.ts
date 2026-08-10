@@ -4,6 +4,7 @@ import { db } from "@/lib/db"
 import { projects, costPackages, invoiceLineItems } from "@/lib/db/schema"
 import { and, eq } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
+import { STANDARD_COST_PLAN } from "@/lib/cost-plan"
 
 function slugify(name: string) {
   return name
@@ -13,27 +14,10 @@ function slugify(name: string) {
     .replace(/^-+|-+$/g, "")
 }
 
-const DEFAULT_PACKAGES: Array<{ code: string; name: string }> = [
-  { code: "01", name: "Preliminaries" },
-  { code: "02", name: "Groundworks & Foundations" },
-  { code: "03", name: "Superstructure - Frame" },
-  { code: "04", name: "External Walls & Cladding" },
-  { code: "05", name: "Roofing" },
-  { code: "06", name: "Windows & External Doors" },
-  { code: "07", name: "Internal Walls & Partitions" },
-  { code: "08", name: "First Fix Carpentry" },
-  { code: "09", name: "Plumbing & Heating" },
-  { code: "10", name: "Electrical" },
-  { code: "11", name: "Plastering & Drylining" },
-  { code: "12", name: "Second Fix Carpentry" },
-  { code: "13", name: "Kitchens" },
-  { code: "14", name: "Bathrooms & Sanitaryware" },
-  { code: "15", name: "Decoration" },
-  { code: "16", name: "Flooring" },
-  { code: "17", name: "External Works & Landscaping" },
-  { code: "18", name: "Drainage" },
-  { code: "19", name: "Insulation" },
-]
+// The standard Gilbert OS cost plan a new project is seeded with. Shared with
+// the classification engine (lib/cost-plan.ts) so project-independent
+// classification targets exactly the packages a standard project will have.
+const DEFAULT_PACKAGES = STANDARD_COST_PLAN
 
 export type CreateProjectInput = {
   name: string

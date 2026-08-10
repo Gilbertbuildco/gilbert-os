@@ -133,6 +133,12 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   // Whether this line was added to the procurement price database. Delivery,
   // carriage, discounts, labour etc. are excluded so the pricing DB stays clean.
   isPriceTracked: boolean("is_price_tracked").notNull().default(true),
+  // Cost Type dimension for actual costs (Phase 2A):
+  // 'materials' | 'plant_hire' | 'subcontract' | 'other' | 'professional_fees'.
+  // Own direct labour is NOT ingested through this invoice workflow, but the
+  // column can hold 'labour' in future for full economic-cost reporting without
+  // migrating or corrupting historic invoice data. NULL = not yet classified.
+  costType: text("cost_type"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -192,6 +198,107 @@ export const classificationMappings = pgTable("classification_mappings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
+/**
+ * FUNDING BUDGET (Phase 2A)
+ * ---------------------------------------------------------------------------
+ * A lender's agreed funding schedule for a project (e.g. Higher Farm's
+ * Goldentree Funding Budget). This is DELIBERATELY separate from Gilbert OS's
+ * internal cost packages and from actual invoice spend:
+ *
+ *   Funding budget = what the lender agreed to release against completed work.
+ *   Actual cost    = what Gilbert Build Co actually spends delivering it.
+ *
+ * The ORIGINAL amounts here are immutable for reporting/audit. Actual invoices
+ * must NEVER overwrite or adjust them. A favourable variance (spending below
+ * the allowance) is NOT automatically profit — for Higher Farm much of it is
+ * intentional headroom created by self-performed labour.
+ */
+export const fundingBudgets = pgTable("funding_budgets", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").notNull(),
+  name: text("name").notNull(),
+  lender: text("lender"),
+  // 'original_locked' | 'revised' | 'draft'. The original baseline is locked
+  // and its line amounts must never be silently changed.
+  status: text("status").notNull().default("original_locked"),
+  // Permanently marks the original funding baseline for a project so it stays
+  // identifiable even after revised budgets are added later.
+  isOriginal: boolean("is_original").notNull().default(true),
+  // Control totals as supplied by the lender schedule. Kept distinct so line
+  // data can be validated against them without ever being altered to fit.
+  worksTotal: numeric("works_total"),
+  professionalFeesTotal: numeric("professional_fees_total"),
+  originalTotal: numeric("original_total"),
+  // The rounded "amount to borrow" — kept distinct from originalTotal on
+  // purpose (£1,124,595.00 vs £1,124,594.95 for Higher Farm).
+  amountToBorrow: numeric("amount_to_borrow"),
+  // Set true once the imported line data reconciles to the control totals.
+  // Never force this true by altering values — flag the discrepancy instead.
+  reconciled: boolean("reconciled").notNull().default(false),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * An individual line of the lender's funding schedule, stored EXACTLY as
+ * supplied. Descriptions are preserved verbatim and lines are never merged just
+ * because Gilbert OS uses broader operational packages — the underlying lender
+ * allowances must remain individually available.
+ */
+export const fundingBudgetLines = pgTable("funding_budget_lines", {
+  id: serial("id").primaryKey(),
+  fundingBudgetId: integer("funding_budget_id").notNull(),
+  // 'works' | 'professional_fees' — which control total this line rolls into.
+  section: text("section").notNull().default("works"),
+  // Original lender description, immutable audit reference.
+  description: text("description").notNull(),
+  // Original lender allowance for this line, immutable.
+  originalAmount: numeric("original_amount").notNull().default("0"),
+  // Optional convenience hint to the standard cost-plan code; the authoritative
+  // mapping lives in funding_line_package_map (many-to-many).
+  costPackageCode: text("cost_package_code"),
+  // Manual forecast cost-to-complete for this line (structure ready; the engine
+  // falls back to actual-spend-only when null). Never affects originalAmount.
+  forecastToComplete: numeric("forecast_to_complete"),
+  notes: text("notes"),
+  position: integer("position").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Many-to-many mapping between a lender funding line and Gilbert OS cost
+ * packages. A single Gilbert OS package may fund multiple lender lines and vice
+ * versa. `weight` optionally apportions a package's actual spend across the
+ * lines it maps to; when null the engine apportions by original-amount
+ * proportion. No one-to-one relationship is forced.
+ */
+export const fundingLinePackageMap = pgTable("funding_line_package_map", {
+  id: serial("id").primaryKey(),
+  fundingBudgetLineId: integer("funding_budget_line_id").notNull(),
+  costPackageId: integer("cost_package_id").notNull(),
+  weight: numeric("weight"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Per-line, per-funding-line drawdown / funding position. Structure only in
+ * Phase 2A — funding entitlement is driven by completion against the lender
+ * allowance, NOT by actual spend, so these are captured independently and left
+ * for the drawdown-intelligence phase to populate.
+ */
+export const fundingDrawdowns = pgTable("funding_drawdowns", {
+  id: serial("id").primaryKey(),
+  fundingBudgetLineId: integer("funding_budget_line_id").notNull(),
+  // Work completion 0..100 (%). Drives funding earned against the allowance.
+  workCompletePct: numeric("work_complete_pct"),
+  fundingEarned: numeric("funding_earned"),
+  fundingCertified: numeric("funding_certified"),
+  fundingDrawn: numeric("funding_drawn"),
+  notes: text("notes"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
 export const variations = pgTable("variations", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull(),
@@ -212,3 +319,7 @@ export type PriceRecord = typeof priceRecords.$inferSelect
 export type Variation = typeof variations.$inferSelect
 export type SupplierAlias = typeof supplierAliases.$inferSelect
 export type ClassificationMapping = typeof classificationMappings.$inferSelect
+export type FundingBudget = typeof fundingBudgets.$inferSelect
+export type FundingBudgetLine = typeof fundingBudgetLines.$inferSelect
+export type FundingLinePackageMap = typeof fundingLinePackageMap.$inferSelect
+export type FundingDrawdown = typeof fundingDrawdowns.$inferSelect

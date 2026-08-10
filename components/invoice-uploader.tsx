@@ -2,7 +2,7 @@
 
 import { useRef, useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
-import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight } from "lucide-react"
+  import { Upload, Loader2, Trash2, Plus, FileText, Check, ChevronRight, AlertTriangle } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
 import { commitInvoice, type CommitLineItem } from "@/app/actions/invoices"
 import {
@@ -170,7 +170,10 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [packages, setPackages] = useState<PackageOption[]>([])
   // Which document index the exception filter is limiting the nav to.
-  const [filter, setFilter] = useState<"all" | "attention" | "ready">("all")
+  const [filter, setFilter] = useState<"all" | "attention" | "ready" | "duplicate">("all")
+  // Optional supplier / project narrowing on the batch overview.
+  const [supplierFilter, setSupplierFilter] = useState<string>("")
+  const [projectFilter, setProjectFilter] = useState<string>("")
   // Per-file progress shown while a batch is being read.
   const [fileProgress, setFileProgress] = useState<FileProgress[]>([])
   const [processedCount, setProcessedCount] = useState(0)
@@ -750,15 +753,13 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     })
   }
 
-  function commit() {
-    if (!draft) return
-    setError(null)
-    if (!draft.supplierId && !draft.newSupplierName.trim()) {
-      setError("Select or enter a supplier before saving.")
-      return
-    }
+  // Build the commit payload lines for a draft. Cost-package code/name come from
+  // the line's OWN resolved values first (set at resolution time, independent of
+  // the currently-loaded `packages` list) so bulk import stays correct across
+  // documents on different projects. Falls back to the loaded list then learned.
+  function buildPayloadLines(d: Draft): CommitLineItem[] {
     const pkgById = new Map(packages.map((p) => [String(p.id), p]))
-    const payloadLines: CommitLineItem[] = draft.lines
+    return d.lines
       .filter((l) => l.description.trim())
       .map((l) => {
         const pkg = l.costPackageId ? pkgById.get(l.costPackageId) : undefined
@@ -771,8 +772,8 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           lineNet: parseFloat(l.lineNet) || 0,
           vatRate: l.vatRate ? parseFloat(l.vatRate) : null,
           costPackageId: l.costPackageId ? Number(l.costPackageId) : null,
-          costPackageCode: pkg?.code ?? l.learnedPackageCode ?? null,
-          costPackageName: pkg?.name ?? l.learnedPackageName ?? null,
+          costPackageCode: l.costPackageCode ?? pkg?.code ?? l.learnedPackageCode ?? null,
+          costPackageName: l.costPackageName ?? pkg?.name ?? l.learnedPackageName ?? null,
           productId: null,
           trackAsProduct: l.trackAsProduct,
           isPriceTracked: l.trackAsProduct,
@@ -788,63 +789,100 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           },
         }
       })
+  }
 
+  // Reusable commit core — used by the single-document Import button AND by
+  // bulk "Import all ready". Returns the outcome so the caller can sequence
+  // batch imports; does not itself advance the reviewer's cursor.
+  async function commitDraft(d: Draft, index: number): Promise<BatchOutcome> {
+    const status = docStatus(d)
+    const base = outcomeBase(d, index)
+    const result = await commitInvoice({
+      supplierId: d.supplierId ? Number(d.supplierId) : null,
+      newSupplierName: d.supplierId ? null : d.newSupplierName.trim(),
+      rawSupplierHeading: d.newSupplierName.trim() || null,
+      projectId: d.projectId ? Number(d.projectId) : null,
+      invoiceNumber: d.invoiceNumber.trim() || null,
+      invoiceDate: d.invoiceDate || null,
+      transactionType: d.transactionType,
+      net: parseFloat(d.net) || 0,
+      vat: parseFloat(d.vat) || 0,
+      gross: parseFloat(d.gross) || 0,
+      sourceFileName: d.sourceFileName,
+      sourceFilePathname: d.sourceFilePathname,
+      sourceFileHash: d.sourceFileHash,
+      sourcePageStart: d.pageStart,
+      sourcePageEnd: d.pageEnd,
+      notes: d.notes.trim() || null,
+      extractionRaw: d.extractionRaw,
+      confidence: d.confidence,
+      reconciled: d.reconciled,
+      needsReview: !status.ready,
+      lineItems: buildPayloadLines(d),
+    })
+
+    if (result.status === "duplicate") {
+      const reason = "Confirmed on save — this document is already in the system."
+      setDrafts((prev) =>
+        prev.map((doc, i) =>
+          i === index ? { ...doc, verdict: { status: "already_imported", existing: result.existing, reason } } : doc,
+        ),
+      )
+      return { ...base, priceLines: 0, result: "duplicate", reason, existing: result.existing }
+    }
+    return { ...base, result: "imported", reason: null, existing: null }
+  }
+
+  function commit() {
+    if (!draft) return
+    setError(null)
+    if (!draft.supplierId && !draft.newSupplierName.trim()) {
+      setError("Select or enter a supplier before saving.")
+      return
+    }
     const capturedIndex = current
     const capturedDraft = draft
-
     startSaving(async () => {
       try {
-        const status = docStatus(capturedDraft)
-        const result = await commitInvoice({
-          supplierId: capturedDraft.supplierId ? Number(capturedDraft.supplierId) : null,
-          newSupplierName: capturedDraft.supplierId ? null : capturedDraft.newSupplierName.trim(),
-          rawSupplierHeading: capturedDraft.newSupplierName.trim() || null,
-          projectId: capturedDraft.projectId ? Number(capturedDraft.projectId) : null,
-          invoiceNumber: capturedDraft.invoiceNumber.trim() || null,
-          invoiceDate: capturedDraft.invoiceDate || null,
-          transactionType: capturedDraft.transactionType,
-          net: parseFloat(capturedDraft.net) || 0,
-          vat: parseFloat(capturedDraft.vat) || 0,
-          gross: parseFloat(capturedDraft.gross) || 0,
-          sourceFileName: capturedDraft.sourceFileName,
-          sourceFilePathname: capturedDraft.sourceFilePathname,
-          sourceFileHash: capturedDraft.sourceFileHash,
-          sourcePageStart: capturedDraft.pageStart,
-          sourcePageEnd: capturedDraft.pageEnd,
-          notes: capturedDraft.notes.trim() || null,
-          extractionRaw: capturedDraft.extractionRaw,
-          confidence: capturedDraft.confidence,
-          reconciled: capturedDraft.reconciled,
-          needsReview: !status.ready,
-          lineItems: payloadLines,
-        })
-
-        const base = outcomeBase(capturedDraft, capturedIndex)
-
-        if (result.status === "duplicate") {
-          // The server refused to double-import. Nothing was written; record it
-          // as a duplicate and mark the draft so the review UI reflects reality.
-          const reason = "Confirmed on save — this document is already in the system."
-          setDrafts((prev) =>
-            prev.map((d, i) =>
-              i === capturedIndex
-                ? { ...d, verdict: { status: "already_imported", existing: result.existing, reason } }
-                : d,
-            ),
-          )
-          advanceOrFinish(capturedIndex, {
-            ...base,
-            priceLines: 0,
-            result: "duplicate",
-            reason,
-            existing: result.existing,
-          })
-        } else {
-          advanceOrFinish(capturedIndex, { ...base, result: "imported", reason: null, existing: null })
-        }
+        const outcome = await commitDraft(capturedDraft, capturedIndex)
+        advanceOrFinish(capturedIndex, outcome)
       } catch (e) {
         setError((e as Error).message || "Something went wrong while saving.")
       }
+    })
+  }
+
+  // Bulk "Import all ready" — imports ONLY documents that meet the Ready
+  // criteria (docStatus(d).ready) and are not already actioned. Anything needing
+  // attention is left completely untouched. Imports sequentially so learning and
+  // duplicate protection run per document exactly as in single import.
+  function importAllReady() {
+    setError(null)
+    const readyIndices = drafts
+      .map((d, i) => ({ d, i }))
+      .filter(({ d, i }) => !saved[i] && d.verdict?.status !== "already_imported" && docStatus(d).ready)
+      .map(({ i }) => i)
+    if (readyIndices.length === 0) return
+
+    startSaving(async () => {
+      const newOutcomes: BatchOutcome[] = []
+      const importedIdx = new Set<number>()
+      for (const i of readyIndices) {
+        try {
+          const outcome = await commitDraft(drafts[i], i)
+          newOutcomes.push(outcome)
+          importedIdx.add(i)
+        } catch (e) {
+          console.log("[v0] importAllReady: doc", i, "failed:", (e as Error).message)
+          // Skip the failure and keep going; it remains un-actioned for review.
+        }
+      }
+      setOutcomes((prev) => [...prev, ...newOutcomes])
+      const nextSaved = saved.map((s, i) => (importedIdx.has(i) ? true : s))
+      setSaved(nextSaved)
+      const nextIndex = nextSaved.findIndex((s, i) => !s && drafts[i]?.verdict?.status !== "already_imported")
+      if (nextIndex === -1) setStep("summary")
+      else goToDocument(nextIndex)
     })
   }
 
@@ -954,11 +992,33 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   const statuses = drafts.map((d) => docStatus(d))
   const currentStatus = statuses[current]
   const pending = drafts.map((_, i) => !saved[i])
+  const isDuplicateDoc = (d: Draft) =>
+    d.verdict?.status === "already_imported" || d.verdict?.status === "possible_duplicate"
   const readyCount = statuses.filter((s, i) => pending[i] && s.ready).length
-  const attentionCount = statuses.filter((s, i) => pending[i] && !s.ready).length
+  const attentionCount = statuses.filter((s, i) => pending[i] && !s.ready && !isDuplicateDoc(drafts[i])).length
+  const duplicateCount = drafts.filter((d, i) => pending[i] && isDuplicateDoc(d)).length
   const jumpToFirstAttention = () => {
     const idx = statuses.findIndex((s, i) => pending[i] && !s.ready)
     if (idx !== -1) goToDocument(idx)
+  }
+  // Distinct suppliers / projects present in the batch, for the narrowing menus.
+  const supplierNames = Array.from(
+    new Set(drafts.map((d) => d.newSupplierName.trim()).filter(Boolean)),
+  ).sort()
+  const projectNameById = new Map(projects.map((p) => [String(p.id), p.name]))
+  const projectIdsInBatch = Array.from(new Set(drafts.map((d) => d.projectId).filter(Boolean) as string[]))
+  // Whether a document chip is visible under the current status + supplier +
+  // project narrowing. Kept in one place so chips and "Import all ready" agree.
+  const chipVisible = (i: number) => {
+    const d = drafts[i]
+    const st = statuses[i]
+    if (saved[i]) return filter === "all"
+    if (filter === "attention" && (st.ready || isDuplicateDoc(d))) return false
+    if (filter === "ready" && !st.ready) return false
+    if (filter === "duplicate" && !isDuplicateDoc(d)) return false
+    if (supplierFilter && d.newSupplierName.trim() !== supplierFilter) return false
+    if (projectFilter && d.projectId !== projectFilter) return false
+    return true
   }
 
   return (
@@ -1013,10 +1073,11 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
             </label>
           </div>
 
-          {/* Exception counts + jump */}
+          {/* Exception counts + bulk import */}
           <div className="flex flex-wrap items-center gap-2">
-            <StatusPill tone="success">{readyCount} ready</StatusPill>
-            <StatusPill tone="warning">{attentionCount} need attention</StatusPill>
+            <StatusPill tone="success">{readyCount} ready to import</StatusPill>
+            <StatusPill tone="warning">{attentionCount} need review</StatusPill>
+            {duplicateCount > 0 ? <StatusPill tone="danger">{duplicateCount} duplicates</StatusPill> : null}
             {attentionCount > 0 ? (
               <button
                 type="button"
@@ -1026,23 +1087,64 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
                 Go to next exception
               </button>
             ) : null}
-            <div className="ml-auto flex items-center gap-1 rounded-lg border border-border p-0.5">
-              {(["all", "attention", "ready"] as const).map((f) => (
+            <button
+              type="button"
+              onClick={importAllReady}
+              disabled={readyCount === 0 || saving}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} /> : <Check className="h-3.5 w-3.5" strokeWidth={2.5} />}
+              Import {readyCount} ready
+            </button>
+          </div>
+
+          {/* Filters: status + supplier + project narrowing */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 rounded-lg border border-border p-0.5">
+              {(["all", "attention", "ready", "duplicate"] as const).map((f) => (
                 <button
                   key={f}
                   type="button"
                   onClick={() => setFilter(f)}
                   className={cn(
                     "rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors",
-                    filter === f
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground",
+                    filter === f ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {f}
+                  {f === "attention" ? "needs review" : f}
                 </button>
               ))}
             </div>
+            {supplierNames.length > 1 ? (
+              <select
+                value={supplierFilter}
+                onChange={(e) => setSupplierFilter(e.target.value)}
+                className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground focus:border-ring focus:outline-none"
+                aria-label="Filter by supplier"
+              >
+                <option value="">All suppliers</option>
+                {supplierNames.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            {projectIdsInBatch.length > 1 ? (
+              <select
+                value={projectFilter}
+                onChange={(e) => setProjectFilter(e.target.value)}
+                className="h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground focus:border-ring focus:outline-none"
+                aria-label="Filter by project"
+              >
+                <option value="">All projects</option>
+                {projectIdsInBatch.map((pid) => (
+                  <option key={pid} value={pid}>
+                    {projectNameById.get(pid) ?? `Project ${pid}`}
+                  </option>
+                ))}
+              </select>
+            ) : null}
           </div>
 
           {/* Document chips (filtered) */}
@@ -1050,8 +1152,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
             {drafts.map((d, i) => {
               const st = statuses[i]
               const isSaved = saved[i]
-              if (filter === "attention" && (isSaved || st.ready)) return null
-              if (filter === "ready" && (isSaved || !st.ready)) return null
+              if (!chipVisible(i)) return null
               const isCurrent = i === current
               const tone = isSaved
                 ? "border-success/40 bg-success-bg text-success"
@@ -1180,6 +1281,23 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
               </option>
             ))}
           </select>
+          {/* Independent project-assignment status. Cost packages are unaffected
+              by this — an unassigned project only flags the project field. */}
+          {draft.projectId && draft.projectAutoAssigned ? (
+            <span className="mt-1.5 text-xs text-muted-foreground">
+              {draft.projectMatchReason ?? "Assigned automatically."}
+            </span>
+          ) : draft.projectId && draft.projectMatchConfidence === "medium" ? (
+            <span className="mt-1.5 flex items-center gap-1 text-xs text-warning">
+              <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2} />
+              {draft.projectMatchReason ? `Suggested — ${draft.projectMatchReason}. Confirm.` : "Suggested — confirm this is right."}
+            </span>
+          ) : !draft.projectId ? (
+            <span className="mt-1.5 flex items-center gap-1 text-xs text-warning">
+              <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2} />
+              Project needs review — {draft.projectMatchReason ?? "couldn't be matched automatically"}.
+            </span>
+          ) : null}
         </Field>
 
         <Field label="Document type">
@@ -1575,6 +1693,17 @@ function docStatus(d: Draft): DocStatus {
     bump("warn")
   }
 
+  // Independent project assignment. This is decided separately from cost
+  // packages: an unassigned or only-tentatively-matched project flags ONLY the
+  // project field — it never suppresses cost-package classification below.
+  if (!d.projectId) {
+    reasons.push("Project needs review")
+    bump("warn")
+  } else if (d.projectMatchConfidence === "medium" && !d.projectAutoAssigned) {
+    reasons.push("Confirm project")
+    bump("warn")
+  }
+
   // Cost-package classification is an important field: once a project is chosen
   // every genuine line should land in a package. Flag lines left unassigned, or
   // where only a medium-confidence guess was preselected and not yet confirmed.
@@ -1684,7 +1813,24 @@ function CostPackageHint({
   onConfirm: () => void
   onAccept: () => void
 }) {
-  if (!hasPackages) return null
+  // No project chosen yet: still surface the project-INDEPENDENT canonical
+  // classification so an obvious line (e.g. insulation) is visibly classified
+  // before project selection. It is applied to the plan the instant a project
+  // is assigned; an unknown project never leaves this blank.
+  if (!hasPackages) {
+    if (line.canonicalPackageName && line.canonicalConfidence !== "none") {
+      const label = line.canonicalPackageCode
+        ? `${line.canonicalPackageCode} · ${line.canonicalPackageName}`
+        : line.canonicalPackageName
+      return (
+        <span className="mt-1 block text-[11px] text-muted-foreground">
+          Will map to <span className="font-medium text-foreground">{label}</span>
+          {line.canonicalConfidence === "medium" ? " · confirm after project" : ""}
+        </span>
+      )
+    }
+    return null
+  }
 
   if (line.costPackageId) {
     if (line.packageConfirmed) return null
@@ -1735,7 +1881,7 @@ function StatusPill({
   tone,
   children,
 }: {
-  tone: "success" | "warning" | "info"
+  tone: "success" | "warning" | "info" | "danger"
   children: React.ReactNode
 }) {
   const cls =
@@ -1743,7 +1889,9 @@ function StatusPill({
       ? "border-success/40 bg-success-bg text-success"
       : tone === "warning"
         ? "border-warning/40 bg-warning-bg text-warning"
-        : "border-info/40 bg-info-bg text-info"
+        : tone === "danger"
+          ? "border-danger/40 bg-danger-bg text-danger"
+          : "border-info/40 bg-info-bg text-info"
   return (
     <span className={cn("rounded-full border px-2.5 py-0.5 text-xs font-medium", cls)}>
       {children}

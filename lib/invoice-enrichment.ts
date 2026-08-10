@@ -144,8 +144,11 @@ export async function suggestCostPackages(
     "and its exact NAME (copied verbatim from the list) so it can be resolved reliably. Classify by the MATERIAL " +
     "itself, not by where it is installed: when a dedicated material package exists (for example 'Insulation'), " +
     "prefer it over any location-based package. An insulation product (insulation board, PIR, mineral wool, etc.) " +
-    "belongs in the 'Insulation' package regardless of whether it goes in the roof, walls or floor. Only fall back " +
-    "to a location-based package when no dedicated material package fits. Use 'high' confidence for an obvious fit, " +
+    "belongs in the 'Insulation' package regardless of whether it goes in the roof, walls or floor. The same trade-first " +
+    "rule applies to tiling: wall tiling, floor tiling, splashbacks and tiling-specific materials (tile adhesive, grout, " +
+    "trims, backer boards) belong in the 'Tiling & Splashbacks' package regardless of the room (kitchen, bathroom, " +
+    "en-suite, WC) — never classify tiling by room into Flooring, Decoration, Kitchens or Bathrooms. Only fall back " +
+    "to a location-based package when no dedicated material/trade package fits. Use 'high' confidence for an obvious fit, " +
     "'medium' when it is a reasonable best-guess among a few plausible packages, and 'low' when you are unsure. " +
     "Only return null for both fields when genuinely no package could apply."
 

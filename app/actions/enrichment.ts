@@ -22,6 +22,8 @@ import {
   STANDARD_COST_PLAN,
   INSULATION_PACKAGE_NAME,
   looksLikeInsulation,
+  TILING_PACKAGE_NAME,
+  looksLikeTiling,
 } from "@/lib/cost-plan"
 import { matchProject, type ProjectMatch } from "@/lib/project-matching"
 
@@ -560,6 +562,24 @@ async function classifyLinesToPlan(
         lines[i].normalisedName ?? ""
       } ${lines[i].description ?? ""}`
       if (looksLikeInsulation(hay)) setResult(i, insulationPkg, "high", false)
+      else stillUnresolved.push(i)
+    }
+    unresolved = stillUnresolved
+  }
+
+  // Trade-first rule — tiling works/materials belong in the dedicated
+  // "Tiling & Splashbacks" package regardless of the room (kitchen, bathroom,
+  // en-suite, WC). Mirrors the insulation rule and runs before the broad
+  // category-learned and AI tiers so location-based packages (Flooring,
+  // Decoration, Kitchens, Bathrooms) can't capture tiling.
+  const tilingPkg = byName.get(TILING_PACKAGE_NAME.toLowerCase())
+  if (tilingPkg) {
+    const stillUnresolved: number[] = []
+    for (const i of unresolved) {
+      const hay = `${lines[i].category ?? ""} ${lines[i].productType ?? ""} ${
+        lines[i].normalisedName ?? ""
+      } ${lines[i].description ?? ""}`
+      if (looksLikeTiling(hay)) setResult(i, tilingPkg, "high", false)
       else stillUnresolved.push(i)
     }
     unresolved = stillUnresolved

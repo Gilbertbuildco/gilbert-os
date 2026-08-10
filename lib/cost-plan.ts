@@ -37,10 +37,17 @@ export const STANDARD_COST_PLAN: StandardPackage[] = [
   { code: "17", name: "External Works & Landscaping" },
   { code: "18", name: "Drainage" },
   { code: "19", name: "Insulation" },
+  // Trade-first package: ALL tiling works/materials regardless of room (wall &
+  // floor tiling, splashbacks, tile adhesive/grout). Appended as code 20 so
+  // existing package numbering is never disturbed.
+  { code: "20", name: "Tiling & Splashbacks" },
 ]
 
 /** The canonical name of the dedicated insulation package (material-first rule). */
 export const INSULATION_PACKAGE_NAME = "Insulation"
+
+/** The canonical name of the dedicated tiling package (trade-first rule). */
+export const TILING_PACKAGE_NAME = "Tiling & Splashbacks"
 
 /**
  * Project statuses that count as "active / live" for the single-project default
@@ -87,4 +94,25 @@ export function resolveProjectPackage(
 /** Detect an insulation product from any available descriptive text. */
 export function looksLikeInsulation(text: string): boolean {
   return /insulation|insulated|insulating/.test(text.toLowerCase())
+}
+
+/**
+ * Detect a tiling work/material from any available descriptive text. Trade-first
+ * rule: tiling is classified by the activity/material, NOT by the room it is
+ * installed in. Matches tiles and the tiling-specific consumables (adhesive,
+ * grout, spacers, trims, backer boards) while avoiding obvious false positives
+ * like "roof tile" / "floor tile" carpeting, and "tilt".
+ */
+export function looksLikeTiling(text: string): boolean {
+  const t = text.toLowerCase()
+  // Roof tiles are a Roofing item, not this trade — exclude them explicitly.
+  if (/\broof\s*tile/.test(t)) return false
+  return (
+    /\bwall\s*&?\s*floor\s*til/.test(t) ||
+    /\bsplashback/.test(t) ||
+    /\btil(e|es|ing)\b/.test(t) ||
+    /\btile\s*(adhesive|grout|spacer|trim|backer)/.test(t) ||
+    /\b(tile\s*)?grout\b/.test(t) ||
+    /\btanking\b/.test(t)
+  )
 }

@@ -24,6 +24,8 @@ import {
   looksLikeInsulation,
   TILING_PACKAGE_NAME,
   looksLikeTiling,
+  ROADS_PACKAGE_NAME,
+  looksLikeRoadsInfrastructure,
 } from "@/lib/cost-plan"
 import { matchProject, type ProjectMatch } from "@/lib/project-matching"
 
@@ -580,6 +582,23 @@ async function classifyLinesToPlan(
         lines[i].normalisedName ?? ""
       } ${lines[i].description ?? ""}`
       if (looksLikeTiling(hay)) setResult(i, tilingPkg, "high", false)
+      else stillUnresolved.push(i)
+    }
+    unresolved = stillUnresolved
+  }
+
+  // Infrastructure rule — adoptable-highway / road-infrastructure works belong
+  // in the dedicated "Roads & Infrastructure" package. Conservative matcher (see
+  // looksLikeRoadsInfrastructure) so only genuine highway vocabulary is captured
+  // and plot drainage / general landscaping stay in 18 / 17 respectively.
+  const roadsPkg = byName.get(ROADS_PACKAGE_NAME.toLowerCase())
+  if (roadsPkg) {
+    const stillUnresolved: number[] = []
+    for (const i of unresolved) {
+      const hay = `${lines[i].category ?? ""} ${lines[i].productType ?? ""} ${
+        lines[i].normalisedName ?? ""
+      } ${lines[i].description ?? ""}`
+      if (looksLikeRoadsInfrastructure(hay)) setResult(i, roadsPkg, "high", false)
       else stillUnresolved.push(i)
     }
     unresolved = stillUnresolved

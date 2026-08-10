@@ -147,7 +147,10 @@ export async function suggestCostPackages(
     "belongs in the 'Insulation' package regardless of whether it goes in the roof, walls or floor. The same trade-first " +
     "rule applies to tiling: wall tiling, floor tiling, splashbacks and tiling-specific materials (tile adhesive, grout, " +
     "trims, backer boards) belong in the 'Tiling & Splashbacks' package regardless of the room (kitchen, bathroom, " +
-    "en-suite, WC) — never classify tiling by room into Flooring, Decoration, Kitchens or Bathrooms. Only fall back " +
+    "en-suite, WC) — never classify tiling by room into Flooring, Decoration, Kitchens or Bathrooms. Road and adoptable-" +
+    "highway infrastructure (S38 works, road formation/sub-base, kerbs, tarmac/asphalt surfacing, and highway drainage " +
+    "forming part of the adoptable highway) belongs in 'Roads & Infrastructure' — but normal plot/site drainage stays in " +
+    "'Drainage', and landscaping, paving and patios stay in 'External Works & Landscaping'. Only fall back " +
     "to a location-based package when no dedicated material/trade package fits. Use 'high' confidence for an obvious fit, " +
     "'medium' when it is a reasonable best-guess among a few plausible packages, and 'low' when you are unsure. " +
     "Only return null for both fields when genuinely no package could apply."

@@ -38,7 +38,7 @@ type Row = {
 // decision. Professional fees intentionally carry no build-package mapping.
 const SCHEDULE: Row[] = [
   // WORKS
-  { section: "works", description: "Preliminaries", amount: 110108.0, map: "01" },
+  { section: "works", description: "Preliminaries", amount: 10108.0, map: "01" },
   { section: "works", description: "Plot Drainage (Below Ground)", amount: 24800.0, map: "18" },
   { section: "works", description: "Foundations", amount: 49602.97, map: "02" },
   { section: "works", description: "Ground Floor Block and Beam", amount: 22000.0, map: "02" },
@@ -166,7 +166,11 @@ async function main() {
     professionalFeesTotal: Number(budget.professional_fees_total),
     originalTotal: Number(budget.original_total),
   })
-  await pool.query(`UPDATE funding_budgets SET reconciled = $1 WHERE id = $2`, [recon.ok, budgetId])
+  // Only lock the baseline when it genuinely reconciles; never force it.
+  await pool.query(
+    `UPDATE funding_budgets SET reconciled = $1, status = $2 WHERE id = $3`,
+    [recon.ok, recon.ok ? "original_locked" : "draft", budgetId],
+  )
 
   // ── Actual spend from confirmed invoices (unchanged, read-only) ─────────
   const spendRes = await pool.query(

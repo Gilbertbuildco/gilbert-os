@@ -267,10 +267,24 @@ export const fundingBudgetLines = pgTable("funding_budget_lines", {
 
 /**
  * Many-to-many mapping between a lender funding line and Gilbert OS cost
- * packages. A single Gilbert OS package may fund multiple lender lines and vice
- * versa. `weight` optionally apportions a package's actual spend across the
- * lines it maps to; when null the engine apportions by original-amount
- * proportion. No one-to-one relationship is forced.
+ * packages.
+ *
+ * CORE ARCHITECTURE RULE (governs ALL funding-budget mappings):
+ * One Goldentree funding line may relate to MULTIPLE Gilbert OS cost packages
+ * WITHOUT ever splitting the lender allowance itself. Gilbert OS does NOT
+ * rewrite the lender's historical cost plan to match our internal packages. The
+ * funding line's `originalAmount` is preserved exactly as submitted; actual
+ * Gilbert OS costs from the mapped packages simply ROLL UP against it. The
+ * reported comparison is always:
+ *   Original allowance  vs  Actual attributable spend to date  →  headroom,
+ *   plus forecast final cost and forecast variance against the allowance.
+ *
+ * `weight` optionally apportions a PACKAGE's actual spend across the lines it
+ * maps to; it NEVER touches an allowance. When a package is shared across lines
+ * and there is no defensible basis to divide its actuals, DEFER that mapping
+ * (leave it out, note it on the line) rather than invent a split — the detailed
+ * breakdown arrives naturally through actual costs as work progresses, and
+ * double counting is avoided.
  */
 export const fundingLinePackageMap = pgTable("funding_line_package_map", {
   id: serial("id").primaryKey(),

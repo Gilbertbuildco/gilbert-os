@@ -77,7 +77,19 @@
     { "file": "scripts/seed-higher-farm-funding.mjs", "purpose": "Seed Goldentree budget header with locked control totals", "idempotent": true, "appliedToProduction": true, "runCommand": "node --env-file-if-exists=.env.development.local scripts/seed-higher-farm-funding.mjs" },
     { "file": "scripts/load-goldentree-schedule.mts", "purpose": "Load 48 verbatim schedule lines + reconcile + lock + confident package mappings", "idempotent": true, "appliedToProduction": true, "runCommand": "npx tsx scripts/load-goldentree-schedule.mts" },
     { "file": "scripts/add-tiling-package.mjs", "purpose": "Add package 20 Tiling & Splashbacks + map funding line", "idempotent": true, "appliedToProduction": true, "runCommand": "node --env-file-if-exists=.env.development.local scripts/add-tiling-package.mjs" },
-    { "file": "scripts/add-roads-package.mjs", "purpose": "Add package 21 Roads & Infrastructure + map funding line; scan (not auto-reclassify) historic invoices", "idempotent": true, "appliedToProduction": true, "runCommand": "npx tsx scripts/add-roads-package.mjs" }
+    { "file": "scripts/add-roads-package.mjs", "purpose": "Add package 21 Roads & Infrastructure + map funding line; scan (not auto-reclassify) historic invoices", "idempotent": true, "appliedToProduction": true, "runCommand": "npx tsx scripts/add-roads-package.mjs" },
+    { "file": "scripts/save-line7.mjs", "purpose": "Persist Street Lighting funding line -> package 21 mapping with no-double-count attribution note", "idempotent": true, "appliedToProduction": true, "runCommand": "node --env-file-if-exists=.env.development.local scripts/save-line7.mjs" },
+    { "file": "scripts/save-line8.mjs", "purpose": "Record Mains Electricity funding line as UNRESOLVED (pending Utilities / Service Connections package decision)", "idempotent": true, "appliedToProduction": true, "runCommand": "node --env-file-if-exists=.env.development.local scripts/save-line8.mjs" }
+  ],
+  "freshDbRebuildOrder": [
+    "scripts/migrate-base.mjs",
+    "scripts/migrate-funding.mjs",
+    "scripts/seed-higher-farm-funding.mjs",
+    "scripts/load-goldentree-schedule.mts",
+    "scripts/add-tiling-package.mjs",
+    "scripts/add-roads-package.mjs",
+    "scripts/save-line7.mjs",
+    "scripts/save-line8.mjs"
   ],
   "costPackages": [
     { "code": "01", "name": "Preliminaries" },

@@ -9,6 +9,8 @@ import {
   prepareBatch,
   suggestPackagesForProject,
   type DocIntelligence,
+  type DocReferences,
+  type ResolvedPackage,
 } from "@/app/actions/enrichment"
 import type { ExtractedInvoice, ExtractionResult } from "@/lib/invoice-extraction"
 import type { DuplicateVerdict } from "@/lib/duplicate-detection"
@@ -79,6 +81,16 @@ interface DraftLine {
   packageFromMemory?: boolean
   /** true once the user has explicitly chosen or accepted a cost package. */
   packageConfirmed?: boolean
+  // Project-INDEPENDENT canonical classification (from prepareBatch, against the
+  // standard cost plan). Kept so an obvious line shows a provisional package
+  // even before a project is chosen and is applied the instant one is assigned.
+  canonicalPackageCode?: string | null
+  canonicalPackageName?: string | null
+  canonicalConfidence?: "high" | "medium" | "low" | "none"
+  // Resolved package code/name for the chosen project (set with costPackageId),
+  // so commit can record them without depending on the loaded packages list.
+  costPackageCode?: string | null
+  costPackageName?: string | null
 }
 
 interface Draft {
@@ -112,6 +124,16 @@ interface Draft {
   // Arithmetic reconciliation result for the header totals vs the lines.
   reconciled: boolean
   reconIssues: string[]
+  // Identifying references (site/development name, addresses, order/PO/customer
+  // refs) captured at extraction — used ONLY for project matching, never money.
+  references: DocReferences | null
+  // Independent project assignment decided by prepareBatch. Confidence drives
+  // review-by-exception: "high" is auto-assigned and waved through, "medium" is
+  // preselected but flagged to confirm, "none" is left unassigned for review.
+  projectMatchConfidence: "high" | "medium" | "low" | "none" | null
+  projectMatchReason: string | null
+  // true when a confident match auto-populated the project (vs a user choice).
+  projectAutoAssigned: boolean
   lines: DraftLine[]
 }
 
@@ -211,6 +233,10 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       confidence: d.confidence ?? null,
       reconciled: true,
       reconIssues: [],
+      references: d.references ?? null,
+      projectMatchConfidence: null,
+      projectMatchReason: null,
+      projectAutoAssigned: false,
       lines: (d.lineItems ?? []).map((li) => ({
         description: li.description ?? "",
         quantity: li.quantity != null ? String(li.quantity) : "",
@@ -374,6 +400,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
           vat: d.vat ? parseFloat(d.vat) : null,
           gross: d.gross ? parseFloat(d.gross) : null,
           sourceFileHash: d.sourceFileHash,
+          references: d.references,
           lines: d.lines.map((l) => ({
             description: l.description,
             quantity: l.quantity ? parseFloat(l.quantity) : null,
@@ -393,12 +420,41 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     }
     setEnriching(false)
 
+    // Resolve cost packages for every document that now has a project (assigned
+    // automatically above). The canonical classification is mapped onto each
+    // project's own plan here — the ONLY stage that needs project availability.
+    // Done in-memory before handing drafts to React so the review screen opens
+    // fully classified. Packages are fetched once per distinct project.
+    setSuggesting(true)
+    try {
+      const pkgCache = new Map<number, PackageOption[]>()
+      for (let i = 0; i < collected.length; i++) {
+        const d = collected[i]
+        if (!d.projectId) continue
+        const pid = Number(d.projectId)
+        let pkgs = pkgCache.get(pid)
+        if (!pkgs) {
+          pkgs = await fetchCostPackages(pid)
+          pkgCache.set(pid, pkgs)
+        }
+        await resolvePackagesInto(d, pid, pkgs)
+      }
+    } catch (err) {
+      console.log("[v0] finishReading: package pre-resolution failed:", (err as Error).message)
+    }
+    setSuggesting(false)
+
     setExtracting(false)
     setDrafts(collected)
     setSaved(collected.map(() => false))
     // Start on the first document that isn't already imported, if any.
     const firstActionable = collected.findIndex((d) => d.verdict?.status !== "already_imported")
     setCurrent(firstActionable === -1 ? 0 : firstActionable)
+    // Keep the loaded package list in sync with the first document's project so
+    // its cost-package dropdowns render immediately.
+    const startIdx = firstActionable === -1 ? 0 : firstActionable
+    const startProject = collected[startIdx]?.projectId
+    if (startProject) fetchCostPackages(Number(startProject)).then(setPackages).catch(() => setPackages([]))
     setStep("review")
   }
 
@@ -425,6 +481,20 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
     if (m.supplierId != null && (status === "exact" || status === "strong")) {
       d.supplierId = String(m.supplierId)
     }
+
+    // Independent project assignment. A HIGH-confidence match (which includes
+    // the single-active-project default) auto-populates the project so the doc
+    // can be waved through; a MEDIUM match preselects it but is flagged for
+    // confirmation; NONE leaves it unassigned for review. Never overwrite a
+    // project the reviewer already chose.
+    const pm = intel.projectMatch
+    d.projectMatchConfidence = pm.confidence
+    d.projectMatchReason = pm.reason
+    if (!d.projectId && pm.projectId != null && (pm.confidence === "high" || pm.confidence === "medium")) {
+      d.projectId = String(pm.projectId)
+      d.projectAutoAssigned = pm.confidence === "high"
+    }
+
     d.lines = d.lines.map((line, i) => {
       const li = intel.lines[i]
       if (!li) return line
@@ -447,6 +517,11 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
         learnedPackageCode: li.learnedPackageCode,
         learnedPackageName: li.learnedPackageName,
         packageFromMemory: li.fromMemory,
+        // Project-independent canonical classification — shown provisionally and
+        // mapped onto the project's plan once resolved.
+        canonicalPackageCode: li.canonicalPackageCode,
+        canonicalPackageName: li.canonicalPackageName,
+        canonicalConfidence: li.canonicalConfidence,
       }
     })
   }
@@ -475,6 +550,10 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
       confidence: null,
       reconciled: true,
       reconIssues: [],
+      references: null,
+      projectMatchConfidence: null,
+      projectMatchReason: null,
+      projectAutoAssigned: false,
       lines: [{ ...emptyLine }],
     }
   }
@@ -482,62 +561,86 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   async function onProjectChange(projectId: string) {
     if (!draft) return
     const capturedIndex = current
-    setDraft({ ...draft, projectId })
+    // A manual choice is authoritative: clear the auto-assign flag and any
+    // matcher uncertainty so the project no longer reads as "needs review".
+    setDraft({
+      ...draft,
+      projectId,
+      projectAutoAssigned: false,
+      projectMatchConfidence: projectId ? "high" : draft.projectMatchConfidence,
+    })
     if (!projectId) {
       setPackages([])
       return
     }
     const pkgs = await fetchCostPackages(Number(projectId))
     setPackages(pkgs)
-    await resolvePackagesFor(capturedIndex, Number(projectId))
+    await resolvePackagesFor(capturedIndex, Number(projectId), pkgs)
   }
 
-  // Ask the server to resolve a cost package per line for a document within the
-  // chosen project (learned mappings first, then AI over the project's plan).
-  // Only fills packages the reviewer hasn't already chosen.
-  async function resolvePackagesFor(docIndex: number, projectId: number) {
+  // Build the per-line payload the server resolver reasons over. Carries the
+  // canonical (project-independent) classification so the resolver can map it
+  // straight onto the project's plan without re-running the model.
+  function toSuggestionLines(lines: DraftLine[]) {
+    return lines.map((l) => ({
+      description: l.description,
+      category: l.productCategory || null,
+      productType: l.productType ?? null,
+      normalisedName: l.normalisedName ?? l.description,
+      learnedPackageCode: l.learnedPackageCode ?? null,
+      learnedPackageName: l.learnedPackageName ?? null,
+      canonicalPackageCode: l.canonicalPackageCode ?? null,
+      canonicalPackageName: l.canonicalPackageName ?? null,
+      canonicalConfidence: l.canonicalConfidence,
+    }))
+  }
+
+  // Merge resolved packages back onto lines. Preselects high- AND medium-
+  // confidence suggestions (the reviewer is checking exceptions, not classifying
+  // from scratch); low/none stay unassigned so they surface as "needs review".
+  // Never overrides a package the reviewer already chose. `pkgs` supplies the
+  // code/name recorded on commit.
+  function mergeResolved(lines: DraftLine[], resolved: ResolvedPackage[], pkgs: PackageOption[]): DraftLine[] {
+    const byId = new Map(pkgs.map((p) => [p.id, p]))
+    return lines.map((line, li) => {
+      const r = resolved[li]
+      if (!r || r.packageId == null) return line
+      const autoApply =
+        !line.costPackageId && !line.packageConfirmed && (r.confidence === "high" || r.confidence === "medium")
+      const pkg = byId.get(r.packageId)
+      return {
+        ...line,
+        suggestedPackageId: String(r.packageId),
+        suggestConfidence: r.confidence,
+        packageFromMemory: r.fromMemory || line.packageFromMemory,
+        costPackageId: autoApply ? String(r.packageId) : line.costPackageId,
+        costPackageCode: autoApply ? (pkg?.code ?? r.packageCode ?? null) : line.costPackageCode,
+        costPackageName: autoApply ? (pkg?.name ?? r.packageName ?? null) : line.costPackageName,
+      }
+    })
+  }
+
+  // In-memory resolution: mutates the draft's lines directly. Used during
+  // finishReading, before drafts are handed to React, so the review screen opens
+  // already classified.
+  async function resolvePackagesInto(d: Draft, projectId: number, pkgs: PackageOption[]) {
+    try {
+      const resolved = await suggestPackagesForProject(projectId, toSuggestionLines(d.lines))
+      d.lines = mergeResolved(d.lines, resolved, pkgs)
+    } catch (err) {
+      console.log("[v0] resolvePackagesInto failed:", (err as Error).message)
+    }
+  }
+
+  // State-based resolution for a document already in `drafts` (user changed its
+  // project). Maps the canonical classification onto the chosen project's plan.
+  async function resolvePackagesFor(docIndex: number, projectId: number, pkgs: PackageOption[]) {
     const d = drafts[docIndex]
     if (!d) return
     setSuggesting(true)
     try {
-      const resolved = await suggestPackagesForProject(
-        projectId,
-        d.lines.map((l) => ({
-          description: l.description,
-          category: l.productCategory || null,
-          productType: l.productType ?? null,
-          normalisedName: l.normalisedName ?? l.description,
-          learnedPackageCode: l.learnedPackageCode ?? null,
-          learnedPackageName: l.learnedPackageName ?? null,
-        })),
-      )
-      setDrafts((prev) =>
-        prev.map((doc, i) => {
-          if (i !== docIndex) return doc
-          return {
-            ...doc,
-            lines: doc.lines.map((line, li) => {
-              const r = resolved[li]
-              if (!r || r.packageId == null) return line
-              // Preselect both high- and medium-confidence suggestions (the user
-              // is reviewing exceptions, not classifying from scratch); leave
-              // low/none unassigned so they surface as "needs review". Never
-              // override a package the user already chose.
-              const autoApply =
-                !line.costPackageId &&
-                !line.packageConfirmed &&
-                (r.confidence === "high" || r.confidence === "medium")
-              return {
-                ...line,
-                suggestedPackageId: String(r.packageId),
-                suggestConfidence: r.confidence,
-                packageFromMemory: r.fromMemory || line.packageFromMemory,
-                costPackageId: autoApply ? String(r.packageId) : line.costPackageId,
-              }
-            }),
-          }
-        }),
-      )
+      const resolved = await suggestPackagesForProject(projectId, toSuggestionLines(d.lines))
+      setDrafts((prev) => prev.map((doc, i) => (i === docIndex ? { ...doc, lines: mergeResolved(doc.lines, resolved, pkgs) } : doc)))
     } catch (err) {
       console.log("[v0] resolvePackagesFor failed:", (err as Error).message)
     } finally {
@@ -549,13 +652,17 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   // resolve cost packages for each. This is the common case: a whole delivery
   // of invoices belongs to one project.
   async function assignProjectToBatch(projectId: string) {
-    setDrafts((prev) => prev.map((d, i) => (saved[i] ? d : { ...d, projectId })))
+    setDrafts((prev) =>
+      prev.map((d, i) =>
+        saved[i] ? d : { ...d, projectId, projectAutoAssigned: false, projectMatchConfidence: "high" },
+      ),
+    )
     if (projectId && draft) {
       const pkgs = await fetchCostPackages(Number(projectId))
       setPackages(pkgs)
       // Resolve packages for each unactioned doc sequentially.
       for (let i = 0; i < drafts.length; i++) {
-        if (!saved[i]) await resolvePackagesFor(i, Number(projectId))
+        if (!saved[i]) await resolvePackagesFor(i, Number(projectId), pkgs)
       }
     }
   }

@@ -1,7 +1,7 @@
 "use server"
 
 import { db } from "@/lib/db"
-import { suppliers, supplierAliases, classificationMappings } from "@/lib/db/schema"
+import { suppliers, supplierAliases, classificationMappings, invoices } from "@/lib/db/schema"
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm"
 import { normaliseSupplierName, normaliseDocNumber } from "@/lib/invoice-identity"
 import { matchSupplier, type SupplierCandidate, type SupplierMatch } from "@/lib/supplier-matching"
@@ -17,7 +17,7 @@ import {
 } from "@/lib/normalisation/products"
 import { normaliseUnit } from "@/lib/normalisation/units"
 import { validateInvoiceArithmetic } from "@/lib/invoice-validation"
-import { getActiveProjects } from "@/lib/queries"
+import { getActiveProjects, getCostPackagesForProject } from "@/lib/queries"
 import {
   STANDARD_COST_PLAN,
   INSULATION_PACKAGE_NAME,
@@ -194,6 +194,46 @@ async function loadLearnedMappings(
   return map
 }
 
+/**
+ * For each supplier, the active project it has historically and unambiguously
+ * been billed to (a clear majority of its confirmed invoices). Used only as a
+ * soft MEDIUM fallback when a document carries no textual project signal.
+ */
+async function loadSupplierProjectHistory(activeProjectIds: number[]): Promise<Map<number, number>> {
+  const result = new Map<number, number>()
+  if (activeProjectIds.length === 0) return result
+  try {
+    const rows = await db
+      .select({
+        supplierId: invoices.supplierId,
+        projectId: invoices.projectId,
+        n: sql<number>`count(*)::int`,
+      })
+      .from(invoices)
+      .where(and(inArray(invoices.projectId, activeProjectIds), eq(invoices.status, "confirmed")))
+      .groupBy(invoices.supplierId, invoices.projectId)
+
+    // Tally per supplier; assign only when one active project is a clear
+    // majority (>= 75% of that supplier's confirmed invoices to active projects).
+    const bySupplier = new Map<number, { total: number; top: { projectId: number; n: number } | null }>()
+    for (const r of rows) {
+      if (r.projectId == null) continue
+      const cur = bySupplier.get(r.supplierId) ?? { total: 0, top: null }
+      cur.total += r.n
+      if (!cur.top || r.n > cur.top.n) cur.top = { projectId: r.projectId, n: r.n }
+      bySupplier.set(r.supplierId, cur)
+    }
+    for (const [supplierId, agg] of bySupplier) {
+      if (agg.top && agg.total > 0 && agg.top.n / agg.total >= 0.75) {
+        result.set(supplierId, agg.top.projectId)
+      }
+    }
+  } catch (err) {
+    console.log("[v0] loadSupplierProjectHistory failed:", (err as Error).message)
+  }
+  return result
+}
+
 // ---------------------------------------------------------------------------
 // prepareBatch — the project-independent intelligence pass
 // ---------------------------------------------------------------------------
@@ -201,12 +241,23 @@ async function loadLearnedMappings(
 /**
  * Run all project-independent intelligence over a freshly-extracted batch:
  * supplier matching, duplicate classification, product/unit normalisation, the
- * AI enrichment pass, learned-mapping recall and arithmetic validation. Cost
- * packages are resolved separately once a project is chosen (see
- * suggestPackagesForProject) because they depend on the project's cost plan.
+ * AI enrichment pass, learned-mapping recall, canonical (project-independent)
+ * cost-package classification, project matching and arithmetic validation.
+ * Cost packages are additionally resolved onto a project's own plan once a
+ * project is chosen (see suggestPackagesForProject).
  */
 export async function prepareBatch(docs: PrepareDocInput[]): Promise<DocIntelligence[]> {
   const candidates = await loadSupplierCandidates()
+  // Active/live projects drive independent project assignment (single-project
+  // default or confidence-based matching). Loaded once for the whole batch.
+  const activeProjects = await getActiveProjects()
+  // Supplier → historically-billed active project. Only a soft fallback signal,
+  // and only worth loading when there is more than one active project to
+  // disambiguate between (the single-project case never needs it).
+  const supplierProjectHistory =
+    activeProjects.length > 1
+      ? await loadSupplierProjectHistory(activeProjects.map((p) => p.id))
+      : new Map<number, number>()
 
   // Duplicate verdicts for the whole batch in one pass (reuses existing logic).
   let verdicts: DuplicateVerdict[] = []
@@ -315,6 +366,31 @@ export async function prepareBatch(docs: PrepareDocInput[]): Promise<DocIntellig
       console.log("[v0] prepareBatch: learned-mapping recall failed:", (err as Error).message)
     }
 
+    // Project-INDEPENDENT canonical cost-package classification. Done here (no
+    // project needed) so an obvious line is classified immediately; the result
+    // is mapped onto the chosen project's plan at resolution time.
+    try {
+      const canonical = await classifyLinesCanonical(
+        baseLines.map((l, i) => ({
+          description: doc.lines[i]?.description ?? "",
+          category: l.category,
+          productType: l.productType,
+          normalisedName: l.normalisedName,
+          learnedPackageCode: l.learnedPackageCode,
+          learnedPackageName: l.learnedPackageName,
+        })),
+      )
+      for (let i = 0; i < baseLines.length; i++) {
+        const c = canonical[i]
+        if (!c) continue
+        baseLines[i].canonicalPackageCode = c.packageCode
+        baseLines[i].canonicalPackageName = c.packageName
+        baseLines[i].canonicalConfidence = c.confidence
+      }
+    } catch (err) {
+      console.log("[v0] prepareBatch: canonical classification failed:", (err as Error).message)
+    }
+
     const validation = validateInvoiceArithmetic({
       lines: doc.lines.map((l) => ({
         quantity: l.quantity,
@@ -326,11 +402,33 @@ export async function prepareBatch(docs: PrepareDocInput[]): Promise<DocIntellig
       gross: doc.gross,
     })
 
+    // Independent project assignment. All identifying text the document carries
+    // becomes the haystack; matchProject applies the single-project default or
+    // confidence-based matching, with the supplier's history as a soft fallback.
+    const refs = doc.references ?? null
+    const haystack = [
+      doc.supplierName,
+      refs?.siteName,
+      refs?.deliveryAddress,
+      refs?.orderReference,
+      refs?.purchaseOrder,
+      refs?.customerReference,
+      ...doc.lines.map((l) => l.description),
+    ]
+      .filter(Boolean)
+      .join(" \n ")
+    const projectMatch = matchProject(haystack, activeProjects, {
+      supplierHistoryProjectId: supplierMatch.supplierId
+        ? (supplierProjectHistory.get(supplierMatch.supplierId) ?? null)
+        : null,
+    })
+
     out.push({
       supplierMatch,
       verdict: verdicts[d] ?? { status: "new", existing: null, reason: null },
       reconciled: validation.reconciled,
       reconIssues: validation.issues.map((i) => i.message),
+      projectMatch,
       lines: baseLines,
     })
   }
@@ -351,6 +449,13 @@ export type LineForSuggestion = {
   learnedPackageCode: string | null
   /** Cost-package name recalled from a learned product mapping, if any. */
   learnedPackageName?: string | null
+  // Canonical (project-independent) classification already decided in
+  // prepareBatch. When present it is the FIRST thing the per-project resolver
+  // maps onto the project's own plan, so project-specific availability is only
+  // applied at this final stage and an obvious classification is never lost.
+  canonicalPackageCode?: string | null
+  canonicalPackageName?: string | null
+  canonicalConfidence?: "high" | "medium" | "low" | "none"
 }
 
 export type ResolvedPackage = {
@@ -361,28 +466,32 @@ export type ResolvedPackage = {
   fromMemory: boolean
 }
 
+/** A cost plan the classifier can target: the standard plan (no ids) or a
+ *  project's own packages (with ids). */
+export type PlanEntry = { id?: number | null; code: string | null; name: string }
+
 /**
- * Resolve the best cost package for each line within a specific project. Learned
- * mappings (by package code/name) are applied first and resolved against this
- * project's own cost plan; remaining lines are sent to the model, which may only
- * pick from the project's existing packages.
+ * Shared classification core. Resolves each line to the best entry of the given
+ * `plan` using the tiered strategy (canonical → learned product → insulation →
+ * learned category → AI). This is deliberately plan-agnostic so the SAME logic
+ * produces the project-independent canonical classification (plan = standard
+ * cost plan) and the final project resolution (plan = the project's packages).
  */
-export async function suggestPackagesForProject(
-  projectId: number,
+async function classifyLinesToPlan(
   lines: LineForSuggestion[],
+  plan: PlanEntry[],
+  opts: { useCanonical: boolean; allowAI: boolean },
 ): Promise<ResolvedPackage[]> {
-  const packages = await getCostPackagesForProject(projectId)
-  const byCode = new Map<string, (typeof packages)[number]>()
-  const byName = new Map<string, (typeof packages)[number]>()
-  for (const p of packages) {
+  const byCode = new Map<string, PlanEntry>()
+  const byName = new Map<string, PlanEntry>()
+  for (const p of plan) {
     if (p.code) byCode.set(p.code.trim().toLowerCase(), p)
     byName.set(p.name.trim().toLowerCase(), p)
   }
 
-  // Resolve a remembered/suggested package (by code OR exact name) against THIS
-  // project's cost plan. Codes may be null on some plans, so the name is a vital
-  // fallback and keeps learning working across projects that share a plan
-  // structure but not identical codes.
+  // Resolve a remembered/suggested package (by code OR exact name) against this
+  // plan. Codes may be null on some plans, so the name is a vital fallback and
+  // keeps learning working across projects that share a plan structure.
   const resolvePkg = (code: string | null | undefined, name: string | null | undefined) => {
     if (code) {
       const p = byCode.get(code.trim().toLowerCase())
@@ -402,99 +511,96 @@ export async function suggestPackagesForProject(
     confidence: "none",
     fromMemory: false,
   }))
-  const setResult = (
-    i: number,
-    p: (typeof packages)[number],
-    confidence: ResolvedPackage["confidence"],
-    fromMemory: boolean,
-  ) => {
-    results[i] = { packageId: p.id, packageCode: p.code, packageName: p.name, confidence, fromMemory }
+  const setResult = (i: number, p: PlanEntry, confidence: ResolvedPackage["confidence"], fromMemory: boolean) => {
+    results[i] = { packageId: p.id ?? null, packageCode: p.code, packageName: p.name, confidence, fromMemory }
   }
 
-  if (packages.length === 0) return results
+  if (plan.length === 0) return results
+
+  let unresolved: number[] = []
+
+  // Tier 0 — canonical classification already computed project-independently.
+  // Mapping it onto the project's plan by code/name is the final resolution
+  // stage; it carries the canonical confidence and avoids re-running the model.
+  for (let i = 0; i < lines.length; i++) {
+    if (opts.useCanonical && lines[i].canonicalPackageCode != null) {
+      const p = resolvePkg(lines[i].canonicalPackageCode, lines[i].canonicalPackageName)
+      if (p) {
+        setResult(i, p, lines[i].canonicalConfidence ?? "medium", false)
+        continue
+      }
+    }
+    unresolved.push(i)
+  }
+  if (unresolved.length === 0) return results
 
   // Tier 1 — learned PRODUCT → package mapping (strongest: a human previously
-  // confirmed this exact product's package). This is the only signal allowed to
-  // override the material-first insulation rule below, because it represents a
-  // deliberate decision about THIS specific product.
-  let unresolved: number[] = []
-  for (let i = 0; i < lines.length; i++) {
-    const p = resolvePkg(lines[i].learnedPackageCode, lines[i].learnedPackageName)
-    if (p) setResult(i, p, "high", true)
-    else unresolved.push(i)
+  // confirmed this exact product's package). The only signal allowed to override
+  // the material-first insulation rule below.
+  {
+    const stillUnresolved: number[] = []
+    for (const i of unresolved) {
+      const p = resolvePkg(lines[i].learnedPackageCode, lines[i].learnedPackageName)
+      if (p) setResult(i, p, "high", true)
+      else stillUnresolved.push(i)
+    }
+    unresolved = stillUnresolved
   }
 
   // Material-first rule — a product that is clearly insulation belongs in the
-  // dedicated "Insulation" cost package regardless of where in the building it
-  // is installed (roof/wall/floor). This deliberately runs BEFORE the broad
-  // category-learned and AI tiers so location-based packages can't capture
-  // insulation; only a specific learned product mapping (Tier 1 above) can.
-  const insulationPkg = byName.get("insulation")
+  // dedicated "Insulation" cost package regardless of where it is installed.
+  // Runs BEFORE the broad category-learned and AI tiers so location-based
+  // packages can't capture insulation; only a specific learned product mapping
+  // (Tier 1 above) can.
+  const insulationPkg = byName.get(INSULATION_PACKAGE_NAME.toLowerCase())
   if (insulationPkg) {
     const stillUnresolved: number[] = []
     for (const i of unresolved) {
       const hay = `${lines[i].category ?? ""} ${lines[i].productType ?? ""} ${
         lines[i].normalisedName ?? ""
-      } ${lines[i].description ?? ""}`.toLowerCase()
-      if (/insulation|insulated|insulating/.test(hay)) {
-        setResult(i, insulationPkg, "high", false)
-      } else {
-        stillUnresolved.push(i)
-      }
+      } ${lines[i].description ?? ""}`
+      if (looksLikeInsulation(hay)) setResult(i, insulationPkg, "high", false)
+      else stillUnresolved.push(i)
     }
     unresolved = stillUnresolved
   }
 
   if (unresolved.length === 0) return results
 
-  // Tier 2 — learned CATEGORY → package mapping (a human previously confirmed
-  // that this category of material belongs to this package).
-  if (unresolved.length > 0) {
-    try {
-      const catKeys = [
-        ...new Set(
-          unresolved
-            .map((i) => (lines[i].category ?? "").trim().toLowerCase())
-            .filter(Boolean),
-        ),
-      ]
-      if (catKeys.length > 0) {
-        const catRows = await db
-          .select()
-          .from(classificationMappings)
-          .where(
-            and(
-              eq(classificationMappings.keyKind, "category"),
-              inArray(classificationMappings.keyValue, catKeys),
-            ),
-          )
-        // Most-confirmed mapping wins per category.
-        const byCat = new Map<string, (typeof catRows)[number]>()
-        for (const r of catRows) {
-          const cur = byCat.get(r.keyValue)
-          if (!cur || r.timesConfirmed > cur.timesConfirmed) byCat.set(r.keyValue, r)
-        }
-        const stillUnresolved: number[] = []
-        for (const i of unresolved) {
-          const cat = (lines[i].category ?? "").trim().toLowerCase()
-          const row = cat ? byCat.get(cat) : undefined
-          const p = row ? resolvePkg(row.costPackageCode, row.costPackageName) : undefined
-          // Category is a broad key, so preselect but keep it review-worthy.
-          if (p) setResult(i, p, "medium", true)
-          else stillUnresolved.push(i)
-        }
-        unresolved = stillUnresolved
+  // Tier 2 — learned CATEGORY → package mapping.
+  try {
+    const catKeys = [
+      ...new Set(unresolved.map((i) => (lines[i].category ?? "").trim().toLowerCase()).filter(Boolean)),
+    ]
+    if (catKeys.length > 0) {
+      const catRows = await db
+        .select()
+        .from(classificationMappings)
+        .where(and(eq(classificationMappings.keyKind, "category"), inArray(classificationMappings.keyValue, catKeys)))
+      const byCat = new Map<string, (typeof catRows)[number]>()
+      for (const r of catRows) {
+        const cur = byCat.get(r.keyValue)
+        if (!cur || r.timesConfirmed > cur.timesConfirmed) byCat.set(r.keyValue, r)
       }
-    } catch (err) {
-      console.log("[v0] suggestPackagesForProject: category-mapping recall failed:", (err as Error).message)
+      const stillUnresolved: number[] = []
+      for (const i of unresolved) {
+        const cat = (lines[i].category ?? "").trim().toLowerCase()
+        const row = cat ? byCat.get(cat) : undefined
+        const p = row ? resolvePkg(row.costPackageCode, row.costPackageName) : undefined
+        if (p) setResult(i, p, "medium", true) // broad key → preselect but review-worthy
+        else stillUnresolved.push(i)
+      }
+      unresolved = stillUnresolved
     }
+  } catch (err) {
+    console.log("[v0] classifyLinesToPlan: category-mapping recall failed:", (err as Error).message)
   }
 
-  if (unresolved.length === 0) return results
+  if (unresolved.length === 0 || !opts.allowAI) return results
 
-  // Tier 5 — AI reasoning over the project's existing plan for the remainder.
-  // (Tiers 3–4, supplier/product history and normalised product info, are
-  // folded in as the category/type hints the model reasons over.)
+  // Tier 5 — AI reasoning over the plan for the remainder. (Tiers 3–4, supplier/
+  // product history, are folded in as the category/type hints the model reasons
+  // over.)
   try {
     const aiLines = unresolved.map((i) => ({
       description: lines[i].description,
@@ -503,7 +609,7 @@ export async function suggestPackagesForProject(
     }))
     const suggestions = await suggestCostPackages(
       aiLines,
-      packages.map((p) => ({ code: p.code, name: p.name })),
+      plan.map((p) => ({ code: p.code, name: p.name })),
     )
     for (const s of suggestions) {
       const lineIndex = unresolved[s.index]
@@ -512,8 +618,32 @@ export async function suggestPackagesForProject(
       if (resolved) setResult(lineIndex, resolved, s.confidence, false)
     }
   } catch (err) {
-    console.log("[v0] suggestPackagesForProject: AI suggestion failed:", (err as Error).message)
+    console.log("[v0] classifyLinesToPlan: AI suggestion failed:", (err as Error).message)
   }
 
   return results
+}
+
+/**
+ * Project-INDEPENDENT canonical classification against the standard Gilbert OS
+ * cost plan. Computed during prepareBatch so a line is classified even before
+ * any project is known; the result is carried on each line and mapped onto the
+ * project's own plan the instant a project is resolved.
+ */
+export async function classifyLinesCanonical(lines: LineForSuggestion[]): Promise<ResolvedPackage[]> {
+  return classifyLinesToPlan(lines, STANDARD_COST_PLAN, { useCanonical: false, allowAI: true })
+}
+
+/**
+ * Resolve the best cost package for each line within a specific project. Applies
+ * the already-computed canonical classification first (mapping it onto this
+ * project's plan), then falls back to learned mappings and AI for anything the
+ * canonical stage could not classify.
+ */
+export async function suggestPackagesForProject(
+  projectId: number,
+  lines: LineForSuggestion[],
+): Promise<ResolvedPackage[]> {
+  const packages = await getCostPackagesForProject(projectId)
+  return classifyLinesToPlan(lines, packages, { useCanonical: true, allowAI: true })
 }

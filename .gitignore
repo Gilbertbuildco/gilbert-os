@@ -38,3 +38,11 @@ yarn-error.log*
 # editor
 .idea
 .vscode
+
+# claude code — machine-local settings
+.claude/settings.local.json
+.claude/launch.json
+.env*
+
+# local data backups from merge/migration scripts
+.backup-*.json

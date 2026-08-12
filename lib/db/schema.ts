@@ -323,6 +323,102 @@ export const variations = pgTable("variations", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
+/**
+ * XERO INTEGRATION
+ * ---------------------------------------------------------------------------
+ * Phase 1 added these tables (structure only, dry-run mapping layer,
+ * `lib/xero/mapping.ts` — pure, never touches the DB). Phase 2 (OAuth
+ * connection layer, `lib/xero/oauth.ts` / `lib/xero/client.ts`) extends
+ * `xeroConnections` with the columns a real token lifecycle needs, and adds
+ * `xeroOauthState` for the PKCE/CSRF handshake. As with every other table
+ * here, there is no DB-level foreign key — references are validated in
+ * application code. This has been run against production — all four tables
+ * below exist live and were verified to match this Drizzle definition
+ * exactly. Any further column/table addition is a NEW additive statement
+ * appended to `scripts/migrate-xero.mjs`, never an edit to one already run.
+ */
+
+/**
+ * OAuth token storage for a connected Xero organisation.
+ *
+ * `refreshToken` (plaintext) is the original Phase 1 column and is
+ * deprecated/unused as of Phase 2 — nothing writes to it anymore.
+ * `refreshTokenEncrypted` holds the AES-256-GCM ciphertext
+ * (`lib/xero/crypto.ts`) and is the only place a refresh token is ever
+ * persisted from Phase 2 onward. `accessToken` is ALSO encrypted (under its own
+ * HKDF-derived key) — a plaintext access token is a live write-capable bearer
+ * credential, and the security pass found it could reach a public error page
+ * via Drizzle embedding query params in error messages. Any legacy plaintext
+ * value still reads correctly and is re-encrypted on the next refresh, so no
+ * migration was needed.
+ */
+export const xeroConnections = pgTable("xero_connections", {
+  id: serial("id").primaryKey(),
+  tenantId: text("tenant_id").notNull(),
+  tenantName: text("tenant_name"),
+  accessToken: text("access_token"),
+  /** @deprecated Phase 1 plaintext column, unused from Phase 2 onward. Never write to this. */
+  refreshToken: text("refresh_token"),
+  /** AES-256-GCM ciphertext (`lib/xero/crypto.ts`), keyed from `XERO_TOKEN_ENCRYPTION_KEY`. The only refresh-token storage Phase 2 writes to. */
+  refreshTokenEncrypted: text("refresh_token_encrypted"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  scopes: text("scopes"),
+  /** When this tenant was first authorised. Set once, never overwritten by a later refresh. */
+  connectedAt: timestamp("connected_at", { withTimezone: true }),
+  /** When the token pair was last successfully rotated/refreshed. */
+  lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }),
+  /** Set when a refresh-token persist fails after retries (see `refreshConnection` in `lib/xero/oauth.ts`) — signals a possibly-orphaned connection. Cleared on the next successful refresh. */
+  lastError: text("last_error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Pending Xero OAuth authorisation attempts. One row per `/api/xero/connect`
+ * click, keyed by the random `nonce` embedded in the signed `state` query
+ * param. The callback redeems a row exactly once (atomic
+ * `UPDATE ... WHERE consumed_at IS NULL`), which is what makes `state`
+ * single-use rather than just signed. Rows older than `expiresAt` are
+ * useless but not automatically purged yet — a future cleanup job, not a
+ * correctness requirement (the callback already rejects expired rows).
+ */
+export const xeroOauthState = pgTable("xero_oauth_state", {
+  nonce: text("nonce").primaryKey(),
+  /** AES-256-GCM ciphertext of the PKCE code_verifier (`lib/xero/crypto.ts`, `OAUTH_VERIFIER_PURPOSE`). */
+  codeVerifierEncrypted: text("code_verifier_encrypted").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+})
+
+/** Per-invoice push state once Gilbert OS actually starts sending bills to Xero. Structure only — empty until Phase 2. */
+export const xeroSyncState = pgTable("xero_sync_state", {
+  id: serial("id").primaryKey(),
+  invoiceId: integer("invoice_id").notNull(),
+  xeroInvoiceId: text("xero_invoice_id"),
+  xeroContactId: text("xero_contact_id"),
+  // 'pending' | 'pushed' | 'error'
+  status: text("status").notNull().default("pending"),
+  lastPushedAt: timestamp("last_pushed_at", { withTimezone: true }),
+  error: text("error"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Cost package -> Xero chart-of-accounts code. Owner-populated only — starts
+ * empty. `lib/xero/mapping.ts` treats a missing entry here as a
+ * `missing_account_code` gap and never invents a code to fill it.
+ */
+export const xeroAccountMap = pgTable("xero_account_map", {
+  id: serial("id").primaryKey(),
+  costPackageId: integer("cost_package_id").notNull(),
+  xeroAccountCode: text("xero_account_code").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
 export type Project = typeof projects.$inferSelect
 export type Supplier = typeof suppliers.$inferSelect
 export type Product = typeof products.$inferSelect
@@ -337,3 +433,7 @@ export type FundingBudget = typeof fundingBudgets.$inferSelect
 export type FundingBudgetLine = typeof fundingBudgetLines.$inferSelect
 export type FundingLinePackageMap = typeof fundingLinePackageMap.$inferSelect
 export type FundingDrawdown = typeof fundingDrawdowns.$inferSelect
+export type XeroConnection = typeof xeroConnections.$inferSelect
+export type XeroSyncState = typeof xeroSyncState.$inferSelect
+export type XeroAccountMap = typeof xeroAccountMap.$inferSelect
+export type XeroOauthState = typeof xeroOauthState.$inferSelect

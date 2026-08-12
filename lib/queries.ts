@@ -1,6 +1,6 @@
 import "server-only"
 import { db } from "@/lib/db"
-import { sql } from "drizzle-orm"
+import { sql, type SQL } from "drizzle-orm"
 
 /**
  * Read-side data access for Gilbert OS.
@@ -256,23 +256,129 @@ export type InvoiceRow = {
   sourceFilePathname: string | null
   sourcePageStart: number | null
   sourcePageEnd: number | null
+  needsReview: boolean
+  reconciled: boolean
+  confidence: string | null
+  classifiedLineCount: number
+  unclassifiedNet: number
 }
 
-export async function getInvoices(): Promise<InvoiceRow[]> {
+/**
+ * Shared filter set for the invoice list and its summary. Every field is
+ * optional; an empty object matches every invoice (subject to whatever
+ * pagination/sort the caller adds on top in getInvoices).
+ */
+export type InvoiceListFilters = {
+  search?: string
+  supplierId?: number
+  projectId?: number
+  dateFrom?: string
+  dateTo?: string
+  transactionType?: "invoice" | "credit"
+  needsReview?: boolean
+  unclassifiedOnly?: boolean
+}
+
+export type InvoiceSort = "date" | "supplier" | "number" | "net" | "gross"
+export type SortDirection = "asc" | "desc"
+
+export type InvoiceListOptions = InvoiceListFilters & {
+  sort?: InvoiceSort
+  direction?: SortDirection
+  limit?: number
+  offset?: number
+}
+
+// Explicit whitelist — never interpolate a caller-supplied sort column into SQL.
+const INVOICE_SORT_COLUMNS: Record<InvoiceSort, SQL> = {
+  date: sql`inv.invoice_date`,
+  supplier: sql`s.name`,
+  number: sql`inv.invoice_number`,
+  net: sql`inv.net`,
+  gross: sql`inv.gross`,
+}
+
+/** Builds the shared WHERE conditions for the invoice list and its summary. */
+function buildInvoiceFilterConditions(filters: InvoiceListFilters): SQL[] {
+  const conditions: SQL[] = []
+
+  if (filters.search && filters.search.trim() !== "") {
+    const like = `%${filters.search.trim()}%`
+    conditions.push(sql`(
+      inv.invoice_number ILIKE ${like}
+      OR s.name ILIKE ${like}
+      OR EXISTS (
+        SELECT 1 FROM invoice_line_items sli
+        WHERE sli.invoice_id = inv.id AND sli.description ILIKE ${like}
+      )
+    )`)
+  }
+  if (filters.supplierId != null) {
+    conditions.push(sql`inv.supplier_id = ${filters.supplierId}`)
+  }
+  if (filters.projectId != null) {
+    conditions.push(sql`inv.project_id = ${filters.projectId}`)
+  }
+  if (filters.dateFrom) {
+    conditions.push(sql`inv.invoice_date >= ${filters.dateFrom}`)
+  }
+  if (filters.dateTo) {
+    conditions.push(sql`inv.invoice_date <= ${filters.dateTo}`)
+  }
+  if (filters.transactionType) {
+    conditions.push(sql`inv.transaction_type = ${filters.transactionType}`)
+  }
+  if (filters.needsReview != null) {
+    conditions.push(sql`inv.needs_review = ${filters.needsReview}`)
+  }
+  if (filters.unclassifiedOnly) {
+    conditions.push(sql`EXISTS (
+      SELECT 1 FROM invoice_line_items uli
+      WHERE uli.invoice_id = inv.id AND uli.cost_package_id IS NULL
+    )`)
+  }
+
+  return conditions
+}
+
+function whereClause(conditions: SQL[]): SQL {
+  return conditions.length > 0 ? sql`WHERE ${sql.join(conditions, sql` AND `)}` : sql``
+}
+
+export async function getInvoices(options: InvoiceListOptions = {}): Promise<InvoiceRow[]> {
+  const conditions = buildInvoiceFilterConditions(options)
+  const where = whereClause(conditions)
+
+  const sortColumn = INVOICE_SORT_COLUMNS[options.sort ?? "date"] ?? INVOICE_SORT_COLUMNS.date
+  const direction = options.direction === "asc" ? sql`ASC` : sql`DESC`
+
+  const limit = options.limit != null ? sql`LIMIT ${options.limit}` : sql``
+  const offset = options.offset != null ? sql`OFFSET ${options.offset}` : sql``
+
   const rows = await db.execute(sql`
     SELECT inv.id, s.name AS supplier_name, p.name AS project_name,
       inv.invoice_number, inv.invoice_date, inv.transaction_type,
       inv.net, inv.vat, inv.gross, inv.status,
       inv.source_file_name, inv.source_file_pathname,
       inv.source_page_start, inv.source_page_end,
-      COALESCE(li.cnt, 0) AS line_item_count
+      inv.needs_review, inv.reconciled, inv.confidence,
+      COALESCE(li.cnt, 0) AS line_item_count,
+      COALESCE(li.classified_cnt, 0) AS classified_line_count,
+      COALESCE(li.unclassified_net, 0) AS unclassified_net
     FROM invoices inv
     JOIN suppliers s ON s.id = inv.supplier_id
     LEFT JOIN projects p ON p.id = inv.project_id
     LEFT JOIN (
-      SELECT invoice_id, COUNT(*) AS cnt FROM invoice_line_items GROUP BY invoice_id
+      SELECT invoice_id,
+        COUNT(*) AS cnt,
+        COUNT(*) FILTER (WHERE cost_package_id IS NOT NULL) AS classified_cnt,
+        COALESCE(SUM(line_net) FILTER (WHERE cost_package_id IS NULL), 0) AS unclassified_net
+      FROM invoice_line_items GROUP BY invoice_id
     ) li ON li.invoice_id = inv.id
-    ORDER BY inv.invoice_date DESC NULLS LAST, inv.created_at DESC
+    ${where}
+    ORDER BY ${sortColumn} ${direction} NULLS LAST, inv.created_at DESC
+    ${limit}
+    ${offset}
   `)
   return (rows.rows as any[]).map((r) => ({
     id: r.id,
@@ -290,6 +396,75 @@ export async function getInvoices(): Promise<InvoiceRow[]> {
     sourceFilePathname: r.source_file_pathname ?? null,
     sourcePageStart: r.source_page_start == null ? null : Number(r.source_page_start),
     sourcePageEnd: r.source_page_end == null ? null : Number(r.source_page_end),
+    needsReview: Boolean(r.needs_review),
+    reconciled: Boolean(r.reconciled),
+    confidence: r.confidence ?? null,
+    classifiedLineCount: n(r.classified_line_count),
+    unclassifiedNet: n(r.unclassified_net),
+  }))
+}
+
+export type InvoiceSummary = {
+  count: number
+  totalNet: number
+  totalVat: number
+  totalGross: number
+  needsReviewCount: number
+  unclassifiedNet: number
+}
+
+/**
+ * Totals for the set of invoices matching `filters` — not just the current
+ * page. Reuses the same WHERE-building logic as getInvoices so the summary
+ * and the list it describes can never drift apart. `count` also serves as
+ * the pagination total (call with the same filters, minus limit/offset).
+ */
+export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promise<InvoiceSummary> {
+  const conditions = buildInvoiceFilterConditions(filters)
+  const where = whereClause(conditions)
+
+  const rows = await db.execute(sql`
+    SELECT
+      COUNT(*) AS count,
+      COALESCE(SUM(inv.net), 0) AS total_net,
+      COALESCE(SUM(inv.vat), 0) AS total_vat,
+      COALESCE(SUM(inv.gross), 0) AS total_gross,
+      COUNT(*) FILTER (WHERE inv.needs_review) AS needs_review_count,
+      COALESCE(SUM(li.unclassified_net), 0) AS unclassified_net
+    FROM invoices inv
+    JOIN suppliers s ON s.id = inv.supplier_id
+    LEFT JOIN projects p ON p.id = inv.project_id
+    LEFT JOIN (
+      SELECT invoice_id,
+        COALESCE(SUM(line_net) FILTER (WHERE cost_package_id IS NULL), 0) AS unclassified_net
+      FROM invoice_line_items GROUP BY invoice_id
+    ) li ON li.invoice_id = inv.id
+    ${where}
+  `)
+  const r = (rows.rows as any[])[0] ?? {}
+  return {
+    count: n(r.count),
+    totalNet: n(r.total_net),
+    totalVat: n(r.total_vat),
+    totalGross: n(r.total_gross),
+    needsReviewCount: n(r.needs_review_count),
+    unclassifiedNet: n(r.unclassified_net),
+  }
+}
+
+export type InvoiceSupplierOption = { id: number; name: string }
+
+/** Distinct suppliers that actually appear on at least one invoice — for the filter dropdown. */
+export async function getInvoiceSupplierOptions(): Promise<InvoiceSupplierOption[]> {
+  const rows = await db.execute(sql`
+    SELECT DISTINCT s.id, s.name
+    FROM suppliers s
+    JOIN invoices inv ON inv.supplier_id = s.id
+    ORDER BY s.name ASC
+  `)
+  return (rows.rows as any[]).map((r) => ({
+    id: r.id as number,
+    name: r.name as string,
   }))
 }
 
@@ -394,11 +569,20 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
     SELECT inv.id, s.name AS supplier_name, p.name AS project_name,
       inv.invoice_number, inv.invoice_date, inv.transaction_type,
       inv.net, inv.vat, inv.gross, inv.status,
-      COALESCE(li.cnt, 0) AS line_item_count
+      inv.needs_review, inv.reconciled, inv.confidence,
+      COALESCE(li.cnt, 0) AS line_item_count,
+      COALESCE(li.classified_cnt, 0) AS classified_line_count,
+      COALESCE(li.unclassified_net, 0) AS unclassified_net
     FROM invoices inv
     JOIN suppliers s ON s.id = inv.supplier_id
     LEFT JOIN projects p ON p.id = inv.project_id
-    LEFT JOIN (SELECT invoice_id, COUNT(*) AS cnt FROM invoice_line_items GROUP BY invoice_id) li ON li.invoice_id = inv.id
+    LEFT JOIN (
+      SELECT invoice_id,
+        COUNT(*) AS cnt,
+        COUNT(*) FILTER (WHERE cost_package_id IS NOT NULL) AS classified_cnt,
+        COALESCE(SUM(line_net) FILTER (WHERE cost_package_id IS NULL), 0) AS unclassified_net
+      FROM invoice_line_items GROUP BY invoice_id
+    ) li ON li.invoice_id = inv.id
     WHERE inv.project_id = ${projectId}
     ORDER BY inv.invoice_date DESC NULLS LAST, inv.created_at DESC
     LIMIT ${limit}
@@ -414,12 +598,17 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
     vat: n(r.vat),
     gross: n(r.gross),
     status: r.status,
-  lineItemCount: n(r.line_item_count),
-  sourceFileName: null,
-  sourceFilePathname: null,
-  sourcePageStart: null,
-  sourcePageEnd: null,
+    lineItemCount: n(r.line_item_count),
+    sourceFileName: null,
+    sourceFilePathname: null,
+    sourcePageStart: null,
+    sourcePageEnd: null,
+    needsReview: Boolean(r.needs_review),
+    reconciled: Boolean(r.reconciled),
+    confidence: r.confidence ?? null,
+    classifiedLineCount: n(r.classified_line_count),
+    unclassifiedNet: n(r.unclassified_net),
   }))
-  }
+}
 
 

@@ -1,11 +1,10 @@
 import { Suspense } from "react"
 import Link from "next/link"
-import { Upload, ReceiptText, ChevronUp, ChevronDown, FileWarning } from "lucide-react"
+import { Upload, ReceiptText, ChevronUp, ChevronDown, FileWarning, CheckCircle2, Clock, CircleHelp } from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { EmptyState } from "@/components/empty-state"
-import { StatusBadge } from "@/components/status-badge"
-import { InvoiceViewCell } from "@/components/invoice-view-cell"
 import { InvoiceFilterBar } from "@/components/invoice-filter-bar"
+import { InvoiceTableRow } from "@/components/invoice-table-row"
 import { MetricCard } from "@/components/metric-card"
 import {
   getInvoices,
@@ -13,7 +12,6 @@ import {
   getInvoiceSupplierOptions,
   getProjectOptions,
   type InvoiceListFilters,
-  type InvoiceRow,
   type InvoiceSort,
   type SortDirection,
 } from "@/lib/queries"
@@ -31,6 +29,7 @@ type SearchParams = {
   from?: string
   to?: string
   type?: string
+  payment?: string
   review?: string
   unclassified?: string
   sort?: string
@@ -38,11 +37,11 @@ type SearchParams = {
   page?: string
 }
 
-function formatDate(d: string | null) {
-  if (!d) return "—"
-  const date = new Date(d)
-  if (Number.isNaN(date.getTime())) return d
-  return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+const PAYMENT_STATUS_VALUES = ["paid", "unpaid", "part_paid", "unrecorded"] as const
+type PaymentStatusParam = (typeof PAYMENT_STATUS_VALUES)[number]
+
+function toPaymentStatus(v?: string): PaymentStatusParam | undefined {
+  return PAYMENT_STATUS_VALUES.includes(v as PaymentStatusParam) ? (v as PaymentStatusParam) : undefined
 }
 
 function toId(v?: string): number | undefined {
@@ -62,6 +61,7 @@ function parseFilters(sp: SearchParams): InvoiceListFilters {
     transactionType: sp.type === "invoice" ? "invoice" : sp.type === "credit" ? "credit" : undefined,
     needsReview: sp.review === "1" ? true : undefined,
     unclassifiedOnly: sp.unclassified === "1" ? true : undefined,
+    paymentStatus: toPaymentStatus(sp.payment),
   }
 }
 
@@ -73,6 +73,7 @@ function parseBaseFilters(sp: SearchParams): InvoiceListFilters {
     projectId: toId(sp.project),
     dateFrom: sp.from || undefined,
     dateTo: sp.to || undefined,
+    paymentStatus: toPaymentStatus(sp.payment),
   }
 }
 
@@ -210,6 +211,30 @@ async function SummarySection({
         />
       </div>
 
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <MetricCard
+          label="Paid"
+          value={formatGBP(summary.paidGross, { decimals: true })}
+          hint="Gross value marked paid"
+          icon={<CheckCircle2 className="h-4 w-4" strokeWidth={1.75} />}
+          className={summary.paidGross > 0 ? "border-success/30 bg-success-bg" : undefined}
+        />
+        <MetricCard
+          label="Outstanding"
+          value={formatGBP(summary.outstandingGross, { decimals: true })}
+          hint="Marked unpaid or part paid"
+          icon={<Clock className="h-4 w-4" strokeWidth={1.75} />}
+          className={summary.outstandingGross > 0 ? "border-warning/30 bg-warning-bg" : undefined}
+        />
+        <MetricCard
+          label="Not recorded"
+          value={formatGBP(summary.unrecordedGross, { decimals: true })}
+          hint="Payment status not yet tracked — unknown, not unpaid"
+          icon={<CircleHelp className="h-4 w-4" strokeWidth={1.75} />}
+          className={summary.unrecordedGross > 0 ? "border-border-strong bg-muted/60" : undefined}
+        />
+      </div>
+
       <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Invoice workflow filter">
         {chips.map((chip) => (
           <Link
@@ -310,6 +335,7 @@ async function TableSection({
     { key: null, label: "VAT", align: "right" },
     { key: "gross", label: "Gross", align: "right" },
     { key: null, label: "Status" },
+    { key: null, label: "Payment" },
     { key: null, label: "Source" },
   ]
 
@@ -360,7 +386,7 @@ async function TableSection({
             </thead>
             <tbody>
               {invoices.map((inv) => (
-                <InvoiceTableRow key={inv.id} inv={inv} />
+                <InvoiceTableRow key={inv.id} inv={inv} columnCount={columns.length} />
               ))}
             </tbody>
           </table>
@@ -369,53 +395,6 @@ async function TableSection({
 
       <Pagination sp={sp} page={page} totalPages={totalPages} />
     </div>
-  )
-}
-
-function InvoiceTableRow({ inv }: { inv: InvoiceRow }) {
-  const linesLabel = inv.lineItemCount > 0 ? `${inv.classifiedLineCount}/${inv.lineItemCount}` : "—"
-  const fullyClassified = inv.lineItemCount > 0 && inv.classifiedLineCount === inv.lineItemCount
-
-  return (
-    <tr className="border-b border-border last:border-b-0 hover:bg-muted/40">
-      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{formatDate(inv.invoiceDate)}</td>
-      <td className="px-4 py-3 font-medium text-foreground">{inv.supplierName}</td>
-      <td className="px-4 py-3 text-muted-foreground">{inv.invoiceNumber ?? "—"}</td>
-      <td className="px-4 py-3 text-muted-foreground">{inv.projectName ?? "Unassigned"}</td>
-      <td className="px-4 py-3 text-right tabular-nums">
-        <span className={fullyClassified ? "text-muted-foreground" : "font-medium text-warning"}>{linesLabel}</span>
-        {inv.unclassifiedNet > 0 ? (
-          <span className="block text-[11px] text-warning">
-            {formatGBP(inv.unclassifiedNet, { decimals: true })} unclassified
-          </span>
-        ) : null}
-      </td>
-      <td className="px-4 py-3 text-right tabular-nums">{formatGBP(inv.net, { decimals: true })}</td>
-      <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
-        {formatGBP(inv.vat, { decimals: true })}
-      </td>
-      <td className="px-4 py-3 text-right font-semibold tabular-nums">{formatGBP(inv.gross, { decimals: true })}</td>
-      <td className="px-4 py-3">
-        <div className="flex flex-col items-start gap-1">
-          <StatusBadge variant={inv.needsReview ? "warning" : "success"} dot>
-            {inv.needsReview ? "Needs review" : "Reviewed"}
-          </StatusBadge>
-          {inv.transactionType === "credit" ? <StatusBadge variant="info">Credit</StatusBadge> : null}
-          {inv.confidence && inv.confidence !== "high" ? (
-            <span className="text-[11px] text-muted-foreground">{inv.confidence} confidence extraction</span>
-          ) : null}
-        </div>
-      </td>
-      <td className="px-4 py-3">
-        <InvoiceViewCell
-          fileUrl={inv.sourceFilePathname}
-          invoiceNumber={inv.invoiceNumber}
-          supplierName={inv.supplierName}
-          pageStart={inv.sourcePageStart}
-          pageEnd={inv.sourcePageEnd}
-        />
-      </td>
-    </tr>
   )
 }
 

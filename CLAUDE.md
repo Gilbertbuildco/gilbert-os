@@ -27,9 +27,10 @@ reference — read the relevant section before changing anything it covers.
 | Validation | Zod v4 |
 | Deploy | Vercel, project `prj_p8auPiaebaQCyljFBM3bCUh6zhtJ` |
 
-Server actions in `app/actions/*` do the work. There are three API routes:
-`app/api/extract-invoice` (`maxDuration = 300`) and the Xero OAuth pair
-`app/api/xero/connect` + `app/api/xero/callback`.
+Server actions in `app/actions/*` do the work. There are four API routes:
+`app/api/extract-invoice` (`maxDuration = 300`), the Xero OAuth pair
+`app/api/xero/connect` + `app/api/xero/callback`, and the read-only
+`app/api/invoices/[id]/line-items` (feeds the invoices-page row expansion).
 
 ---
 

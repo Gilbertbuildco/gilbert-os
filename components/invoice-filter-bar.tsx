@@ -55,6 +55,7 @@ export function InvoiceFilterBar({ supplierOptions, projectOptions }: Props) {
     searchParams.get("from") ||
     searchParams.get("to") ||
     searchParams.get("type") ||
+    searchParams.get("payment") ||
     searchParams.get("review") ||
     searchParams.get("unclassified")
 
@@ -130,6 +131,19 @@ export function InvoiceFilterBar({ supplierOptions, projectOptions }: Props) {
         <option value="">All types</option>
         <option value="invoice">Invoice</option>
         <option value="credit">Credit</option>
+      </select>
+
+      <select
+        value={searchParams.get("payment") ?? ""}
+        onChange={(e) => updateParams({ payment: e.target.value || null })}
+        aria-label="Filter by payment status"
+        className={selectCls}
+      >
+        <option value="">All payment statuses</option>
+        <option value="paid">Paid</option>
+        <option value="part_paid">Part paid</option>
+        <option value="unpaid">Unpaid</option>
+        <option value="unrecorded">Not recorded</option>
       </select>
 
       {hasFilters ? (

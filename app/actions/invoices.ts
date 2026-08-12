@@ -432,6 +432,39 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
   }
 }
 
+export type PaymentStatus = "unpaid" | "paid" | "part_paid"
+const PAYMENT_STATUSES: PaymentStatus[] = ["unpaid", "paid", "part_paid"]
+
+export type SetInvoicePaymentInput = {
+  paymentStatus: PaymentStatus | null
+  paidDate: string | null
+  paymentNotes: string | null
+}
+
+/**
+ * Records the payment state of an invoice for cash-flow visibility. This is
+ * entirely separate from extraction/reconciliation and never touches amounts
+ * (net/vat/gross) or any other financial field — it only ever writes the
+ * three payment columns. `paymentStatus: null` clears the invoice back to
+ * "not recorded"; it is never inferred or defaulted.
+ */
+export async function setInvoicePayment(invoiceId: number, input: SetInvoicePaymentInput) {
+  if (input.paymentStatus !== null && !PAYMENT_STATUSES.includes(input.paymentStatus)) {
+    throw new Error(`Invalid payment status: ${input.paymentStatus}`)
+  }
+
+  await db
+    .update(invoices)
+    .set({
+      paymentStatus: input.paymentStatus,
+      paidDate: input.paidDate || null,
+      paymentNotes: input.paymentNotes || null,
+    })
+    .where(eq(invoices.id, invoiceId))
+
+  revalidatePath("/invoices")
+}
+
 export async function deleteInvoice(id: number) {
   await db.delete(priceRecords).where(eq(priceRecords.invoiceId, id))
   await db.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id))

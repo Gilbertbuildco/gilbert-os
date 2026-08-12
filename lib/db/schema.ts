@@ -96,6 +96,15 @@ export const invoices = pgTable("invoices", {
   creditOfInvoiceId: integer("credit_of_invoice_id"),
   needsReview: boolean("needs_review").notNull().default(false),
   reconciled: boolean("reconciled").notNull().default(true),
+  // Payment tracking (cash flow), independent of extraction/reconciliation.
+  // NULL means "not recorded" — the true state of every invoice ingested before
+  // this field existed, and of any new one until someone records it. Never
+  // backfilled to 'unpaid' as if that were known fact (non-negotiable #1).
+  // Allowed values 'unpaid' | 'paid' | 'part_paid' are enforced in application
+  // code (app/actions/invoices.ts), not a DB constraint, matching repo convention.
+  paymentStatus: text("payment_status"),
+  paidDate: date("paid_date"),
+  paymentNotes: text("payment_notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 

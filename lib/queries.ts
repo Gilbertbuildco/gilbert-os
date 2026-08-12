@@ -261,6 +261,9 @@ export type InvoiceRow = {
   confidence: string | null
   classifiedLineCount: number
   unclassifiedNet: number
+  /** Cash-flow payment state. Null means "not recorded" — never inferred. */
+  paymentStatus: "unpaid" | "paid" | "part_paid" | null
+  paidDate: string | null
 }
 
 /**
@@ -277,6 +280,8 @@ export type InvoiceListFilters = {
   transactionType?: "invoice" | "credit"
   needsReview?: boolean
   unclassifiedOnly?: boolean
+  /** "unrecorded" means payment_status IS NULL — not the same fact as "unpaid". */
+  paymentStatus?: "unpaid" | "paid" | "part_paid" | "unrecorded"
 }
 
 export type InvoiceSort = "date" | "supplier" | "number" | "net" | "gross"
@@ -337,6 +342,11 @@ function buildInvoiceFilterConditions(filters: InvoiceListFilters): SQL[] {
       WHERE uli.invoice_id = inv.id AND uli.cost_package_id IS NULL
     )`)
   }
+  if (filters.paymentStatus === "unrecorded") {
+    conditions.push(sql`inv.payment_status IS NULL`)
+  } else if (filters.paymentStatus != null) {
+    conditions.push(sql`inv.payment_status = ${filters.paymentStatus}`)
+  }
 
   return conditions
 }
@@ -362,6 +372,7 @@ export async function getInvoices(options: InvoiceListOptions = {}): Promise<Inv
       inv.source_file_name, inv.source_file_pathname,
       inv.source_page_start, inv.source_page_end,
       inv.needs_review, inv.reconciled, inv.confidence,
+      inv.payment_status, inv.paid_date,
       COALESCE(li.cnt, 0) AS line_item_count,
       COALESCE(li.classified_cnt, 0) AS classified_line_count,
       COALESCE(li.unclassified_net, 0) AS unclassified_net
@@ -401,6 +412,8 @@ export async function getInvoices(options: InvoiceListOptions = {}): Promise<Inv
     confidence: r.confidence ?? null,
     classifiedLineCount: n(r.classified_line_count),
     unclassifiedNet: n(r.unclassified_net),
+    paymentStatus: r.payment_status ?? null,
+    paidDate: r.paid_date ? String(r.paid_date) : null,
   }))
 }
 
@@ -411,6 +424,18 @@ export type InvoiceSummary = {
   totalGross: number
   needsReviewCount: number
   unclassifiedNet: number
+  /** Gross total where payment_status = 'paid'. */
+  paidGross: number
+  /**
+   * Gross total where payment_status IN ('unpaid', 'part_paid'). We do not
+   * track the amount actually paid on a part-paid invoice, so a part-paid
+   * invoice's FULL gross counts as outstanding here — this is a label
+   * ("cash flow still owed on this invoice"), not a claim that none of it
+   * has been paid.
+   */
+  outstandingGross: number
+  /** Gross total where payment_status IS NULL — "not recorded", not "unpaid". */
+  unrecordedGross: number
 }
 
 /**
@@ -430,7 +455,10 @@ export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promi
       COALESCE(SUM(inv.vat), 0) AS total_vat,
       COALESCE(SUM(inv.gross), 0) AS total_gross,
       COUNT(*) FILTER (WHERE inv.needs_review) AS needs_review_count,
-      COALESCE(SUM(li.unclassified_net), 0) AS unclassified_net
+      COALESCE(SUM(li.unclassified_net), 0) AS unclassified_net,
+      COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status = 'paid'), 0) AS paid_gross,
+      COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status IN ('unpaid', 'part_paid')), 0) AS outstanding_gross,
+      COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status IS NULL), 0) AS unrecorded_gross
     FROM invoices inv
     JOIN suppliers s ON s.id = inv.supplier_id
     LEFT JOIN projects p ON p.id = inv.project_id
@@ -449,6 +477,9 @@ export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promi
     totalGross: n(r.total_gross),
     needsReviewCount: n(r.needs_review_count),
     unclassifiedNet: n(r.unclassified_net),
+    paidGross: n(r.paid_gross),
+    outstandingGross: n(r.outstanding_gross),
+    unrecordedGross: n(r.unrecorded_gross),
   }
 }
 
@@ -570,6 +601,7 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
       inv.invoice_number, inv.invoice_date, inv.transaction_type,
       inv.net, inv.vat, inv.gross, inv.status,
       inv.needs_review, inv.reconciled, inv.confidence,
+      inv.payment_status, inv.paid_date,
       COALESCE(li.cnt, 0) AS line_item_count,
       COALESCE(li.classified_cnt, 0) AS classified_line_count,
       COALESCE(li.unclassified_net, 0) AS unclassified_net
@@ -608,7 +640,49 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
     confidence: r.confidence ?? null,
     classifiedLineCount: n(r.classified_line_count),
     unclassifiedNet: n(r.unclassified_net),
+    paymentStatus: r.payment_status ?? null,
+    paidDate: r.paid_date ? String(r.paid_date) : null,
   }))
 }
 
+export type InvoiceLineItemRow = {
+  id: number
+  description: string
+  quantity: number | null
+  unit: string | null
+  unitPriceExVat: number | null
+  lineNet: number
+  lineVat: number
+  lineGross: number
+  costPackageId: number | null
+  costPackageName: string | null
+  costPackageCode: string | null
+  costType: string | null
+}
 
+/** All line items for a single invoice, ordered by id (i.e. document order). */
+export async function getLineItemsForInvoice(invoiceId: number): Promise<InvoiceLineItemRow[]> {
+  const rows = await db.execute(sql`
+    SELECT li.id, li.description, li.quantity, li.unit, li.unit_price_ex_vat,
+      li.line_net, li.line_vat, li.line_gross, li.cost_package_id, li.cost_type,
+      cp.name AS cost_package_name, cp.code AS cost_package_code
+    FROM invoice_line_items li
+    LEFT JOIN cost_packages cp ON cp.id = li.cost_package_id
+    WHERE li.invoice_id = ${invoiceId}
+    ORDER BY li.id ASC
+  `)
+  return (rows.rows as any[]).map((r) => ({
+    id: r.id,
+    description: r.description,
+    quantity: r.quantity == null ? null : n(r.quantity),
+    unit: r.unit,
+    unitPriceExVat: r.unit_price_ex_vat == null ? null : n(r.unit_price_ex_vat),
+    lineNet: n(r.line_net),
+    lineVat: n(r.line_vat),
+    lineGross: n(r.line_gross),
+    costPackageId: r.cost_package_id ?? null,
+    costPackageName: r.cost_package_name ?? null,
+    costPackageCode: r.cost_package_code ?? null,
+    costType: r.cost_type ?? null,
+  }))
+}

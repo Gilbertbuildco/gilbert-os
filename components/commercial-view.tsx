@@ -2,11 +2,22 @@
 
 import { useState, useTransition } from "react"
 import { useRouter } from "next/navigation"
+import { ChevronDown, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
 import { StatusBadge } from "@/components/status-badge"
 import { EmptyState } from "@/components/empty-state"
 import { setPackageBudget, assignLineItemToPackage } from "@/app/actions/projects"
 import type { CostPackageRow, LineItemRow } from "@/lib/queries"
+
+/** Number of columns in the cost-packages table, for the expanded drill-down row's colSpan. */
+const PACKAGE_TABLE_COLUMN_COUNT = 6
+
+function formatDate(d: string | null) {
+  if (!d) return null
+  const date = new Date(d)
+  if (Number.isNaN(date.getTime())) return d
+  return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+}
 
 type ProjectOption = { id: number; name: string; slug: string }
 
@@ -89,7 +100,13 @@ export function CommercialView({ projects, selectedSlug, packages, lineItems }: 
                   </thead>
                   <tbody>
                     {packages.map((pkg) => (
-                      <PackageRow key={pkg.id} pkg={pkg} onSaved={() => router.refresh()} />
+                      <PackageRow
+                        key={pkg.id}
+                        pkg={pkg}
+                        lineItems={lineItems.filter((li) => li.costPackageId === pkg.id)}
+                        totalCommitted={totalCommitted}
+                        onSaved={() => router.refresh()}
+                      />
                     ))}
                   </tbody>
                 </table>
@@ -156,9 +173,20 @@ function SummaryCard({
   )
 }
 
-function PackageRow({ pkg, onSaved }: { pkg: CostPackageRow; onSaved: () => void }) {
+function PackageRow({
+  pkg,
+  lineItems,
+  totalCommitted,
+  onSaved,
+}: {
+  pkg: CostPackageRow
+  lineItems: LineItemRow[]
+  totalCommitted: number
+  onSaved: () => void
+}) {
   const [value, setValue] = useState(pkg.originalBudget != null ? String(pkg.originalBudget) : "")
   const [isPending, startTransition] = useTransition()
+  const [expanded, setExpanded] = useState(false)
 
   function save() {
     const parsed = value.trim() === "" ? null : parseFloat(value)
@@ -172,46 +200,226 @@ function PackageRow({ pkg, onSaved }: { pkg: CostPackageRow; onSaved: () => void
   const budget = pkg.originalBudget ?? 0
   const variance = budget - pkg.committed
   const over = pkg.originalBudget != null && variance < 0
+  const shareOfCommitted = totalCommitted > 0 ? (pkg.committed / totalCommitted) * 100 : null
+  const canExpand = lineItems.length > 0
 
   return (
-    <tr className="border-b border-border last:border-b-0">
-      <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{pkg.code ?? "—"}</td>
-      <td className="px-4 py-3 font-medium text-foreground">{pkg.name}</td>
-      <td className="px-4 py-2 text-right">
-        <input
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onBlur={save}
-          inputMode="decimal"
-          placeholder="—"
-          aria-label={`Budget for ${pkg.name}`}
-          className="h-9 w-28 rounded-md border border-border bg-background px-2 text-right text-sm tabular-nums text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30"
-        />
-      </td>
-      <td className="px-4 py-3 text-right tabular-nums">
-        {pkg.committed > 0 ? formatGBP(pkg.committed) : <span className="text-muted-foreground">—</span>}
-      </td>
-      <td className="px-4 py-3 text-right tabular-nums">
-        {pkg.originalBudget != null ? (
-          <span className={over ? "text-danger" : "text-success"}>{formatGBP(variance)}</span>
-        ) : (
-          <span className="text-muted-foreground">—</span>
-        )}
-      </td>
-      <td className="px-4 py-3">
-        {isPending ? (
-          <StatusBadge variant="info">Saving…</StatusBadge>
-        ) : pkg.originalBudget == null ? (
-          <StatusBadge variant="neutral">No budget</StatusBadge>
-        ) : over ? (
-          <StatusBadge variant="danger" dot>Over budget</StatusBadge>
-        ) : pkg.committed > 0 ? (
-          <StatusBadge variant="success" dot>On budget</StatusBadge>
-        ) : (
-          <StatusBadge variant="neutral">Awaiting spend</StatusBadge>
-        )}
-      </td>
-    </tr>
+    <>
+      <tr className="border-b border-border last:border-b-0 hover:bg-muted/40">
+        <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-muted-foreground">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setExpanded((e) => !e)}
+              disabled={!canExpand}
+              aria-expanded={expanded}
+              aria-label={expanded ? `Collapse ${pkg.name} line items` : `Expand ${pkg.name} line items`}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+            >
+              {expanded ? (
+                <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.75} />
+              )}
+            </button>
+            {pkg.code ?? "—"}
+          </div>
+        </td>
+        <td className="px-4 py-3 font-medium text-foreground">
+          <div className="flex flex-col">
+            <span>{pkg.name}</span>
+            {lineItems.length > 0 ? (
+              <span className="text-xs font-normal text-muted-foreground">
+                {lineItems.length} item{lineItems.length === 1 ? "" : "s"}
+                {shareOfCommitted != null ? ` · ${shareOfCommitted.toFixed(1)}% of committed` : ""}
+              </span>
+            ) : null}
+          </div>
+        </td>
+        <td className="px-4 py-2 text-right">
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onBlur={save}
+            inputMode="decimal"
+            placeholder="—"
+            aria-label={`Budget for ${pkg.name}`}
+            className="h-9 w-28 rounded-md border border-border bg-background px-2 text-right text-sm tabular-nums text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30"
+          />
+        </td>
+        <td className="px-4 py-3 text-right tabular-nums">
+          {pkg.committed > 0 ? formatGBP(pkg.committed) : <span className="text-muted-foreground">—</span>}
+        </td>
+        <td className="px-4 py-3 text-right tabular-nums">
+          {pkg.originalBudget != null ? (
+            <span className={over ? "text-danger" : "text-success"}>{formatGBP(variance)}</span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          {isPending ? (
+            <StatusBadge variant="info">Saving…</StatusBadge>
+          ) : pkg.originalBudget == null ? (
+            <StatusBadge variant="neutral">No budget</StatusBadge>
+          ) : over ? (
+            <StatusBadge variant="danger" dot>Over budget</StatusBadge>
+          ) : pkg.committed > 0 ? (
+            <StatusBadge variant="success" dot>On budget</StatusBadge>
+          ) : (
+            <StatusBadge variant="neutral">Awaiting spend</StatusBadge>
+          )}
+        </td>
+      </tr>
+      {expanded ? (
+        <tr className="border-b border-border bg-muted/20 last:border-b-0">
+          <td colSpan={PACKAGE_TABLE_COLUMN_COUNT} className="px-4 py-3">
+            <PackageLineItems items={lineItems} />
+          </td>
+        </tr>
+      ) : null}
+    </>
+  )
+}
+
+type GroupedLineItem = {
+  description: string
+  count: number
+  totalNet: number
+  unit: string | null
+  quantity: number | null
+  items: LineItemRow[]
+}
+
+/** Collapses repeat purchases of the same product into one summed row. */
+function groupLineItems(items: LineItemRow[]): GroupedLineItem[] {
+  const groups = new Map<string, GroupedLineItem>()
+  for (const item of items) {
+    const existing = groups.get(item.description)
+    if (existing) {
+      existing.count += 1
+      existing.totalNet += item.lineNet
+      existing.items.push(item)
+      existing.quantity =
+        existing.quantity != null && item.quantity != null && existing.unit === item.unit
+          ? existing.quantity + item.quantity
+          : null
+    } else {
+      groups.set(item.description, {
+        description: item.description,
+        count: 1,
+        totalNet: item.lineNet,
+        unit: item.unit,
+        quantity: item.quantity,
+        items: [item],
+      })
+    }
+  }
+  return Array.from(groups.values()).sort((a, b) => b.totalNet - a.totalNet)
+}
+
+/** A package's committed line items, biggest cost first, with repeat products grouped. */
+function PackageLineItems({ items }: { items: LineItemRow[] }) {
+  const grouped = groupLineItems(items)
+
+  if (grouped.length === 0) {
+    return <p className="py-2 text-sm text-muted-foreground">No committed line items in this package.</p>
+  }
+
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-card">
+      <table className="w-full border-collapse text-xs">
+        <thead>
+          <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
+            <th scope="col" className="px-3 py-2 text-left font-semibold">Description</th>
+            <th scope="col" className="px-3 py-2 text-right font-semibold">Qty</th>
+            <th scope="col" className="px-3 py-2 text-left font-semibold">Unit</th>
+            <th scope="col" className="px-3 py-2 text-left font-semibold">Supplier / invoice</th>
+            <th scope="col" className="px-3 py-2 text-right font-semibold">Net</th>
+          </tr>
+        </thead>
+        <tbody>
+          {grouped.map((group) => (
+            <GroupedLineItemRow key={group.description} group={group} />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function GroupedLineItemRow({ group }: { group: GroupedLineItem }) {
+  const [expanded, setExpanded] = useState(false)
+
+  if (group.count === 1) {
+    const item = group.items[0]
+    const invoiceDate = formatDate(item.invoiceDate)
+    return (
+      <tr className="border-b border-border last:border-b-0">
+        <td className="px-3 py-2 text-foreground">{group.description}</td>
+        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{item.quantity ?? "—"}</td>
+        <td className="px-3 py-2 text-muted-foreground">{item.unit ?? "—"}</td>
+        <td className="px-3 py-2 text-muted-foreground">
+          {item.supplierName}
+          {item.invoiceNumber ? ` · ${item.invoiceNumber}` : ""}
+          {invoiceDate ? ` · ${invoiceDate}` : ""}
+        </td>
+        <td className="px-3 py-2 text-right font-medium tabular-nums text-foreground">
+          {formatGBP(group.totalNet, { decimals: true })}
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <>
+      <tr className="border-b border-border last:border-b-0 hover:bg-muted/40">
+        <td className="px-3 py-2 text-foreground">
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setExpanded((e) => !e)}
+              aria-expanded={expanded}
+              aria-label={expanded ? "Collapse breakdown" : "Expand breakdown"}
+              className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              {expanded ? (
+                <ChevronDown className="h-3 w-3" strokeWidth={1.75} />
+              ) : (
+                <ChevronRight className="h-3 w-3" strokeWidth={1.75} />
+              )}
+            </button>
+            {group.description}
+          </div>
+        </td>
+        <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{group.quantity ?? "—"}</td>
+        <td className="px-3 py-2 text-muted-foreground">{group.unit ?? "—"}</td>
+        <td className="px-3 py-2 text-muted-foreground">×{group.count}</td>
+        <td className="px-3 py-2 text-right font-medium tabular-nums text-foreground">
+          {formatGBP(group.totalNet, { decimals: true })}
+        </td>
+      </tr>
+      {expanded
+        ? group.items.map((item) => {
+            const invoiceDate = formatDate(item.invoiceDate)
+            return (
+              <tr key={item.id} className="border-b border-border bg-muted/20 last:border-b-0">
+                <td className="py-2 pl-8 pr-3 text-muted-foreground">{item.description}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{item.quantity ?? "—"}</td>
+                <td className="px-3 py-2 text-muted-foreground">{item.unit ?? "—"}</td>
+                <td className="px-3 py-2 text-muted-foreground">
+                  {item.supplierName}
+                  {item.invoiceNumber ? ` · ${item.invoiceNumber}` : ""}
+                  {invoiceDate ? ` · ${invoiceDate}` : ""}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {formatGBP(item.lineNet, { decimals: true })}
+                </td>
+              </tr>
+            )
+          })
+        : null}
+    </>
   )
 }
 

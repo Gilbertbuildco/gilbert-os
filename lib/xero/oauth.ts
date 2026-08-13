@@ -47,6 +47,11 @@ const SCOPES = [
   "accounting.payments",
   "accounting.reports.aged.read",
   "accounting.reports.profitandloss.read",
+  // Read-only additions (2026-08-13): direct bank payments ("spend money")
+  // and bill attachments — needed to see owner/subcontractor payments made
+  // without a bill, and to retrieve invoice documents for Gilbert OS.
+  "accounting.banktransactions.read",
+  "accounting.attachments.read",
 ].join(" ")
 
 /** How long a pending authorisation attempt (PKCE verifier) stays redeemable. Xero's own consent screen is normally completed in well under this. */

@@ -1,6 +1,8 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { sql, type SQL } from "drizzle-orm"
+import { normaliseDescriptionKey } from "@/lib/normalisation/products"
+import { resolveProjectPackage, type ProjectPackage } from "@/lib/cost-plan"
 
 /**
  * Read-side data access for Gilbert OS.
@@ -685,4 +687,195 @@ export async function getLineItemsForInvoice(invoiceId: number): Promise<Invoice
     costPackageCode: r.cost_package_code ?? null,
     costType: r.cost_type ?? null,
   }))
+}
+
+export type CostPackageOption = {
+  id: number
+  code: string | null
+  name: string
+}
+
+/**
+ * Lightweight cost-package picker options for a project — just the identity
+ * fields, ordered by code. Slimmer than `getCostPackagesForProject` (which
+ * additionally aggregates committed spend per package) because the inline
+ * classification picker only ever needs id/code/name.
+ */
+export async function getCostPackageOptions(projectId: number): Promise<CostPackageOption[]> {
+  const rows = await db.execute(sql`
+    SELECT id, code, name
+    FROM cost_packages
+    WHERE project_id = ${projectId}
+    ORDER BY code ASC NULLS LAST, id ASC
+  `)
+  return (rows.rows as any[]).map((r) => ({
+    id: Number(r.id),
+    code: r.code ?? null,
+    name: r.name,
+  }))
+}
+
+export type ClassificationSuggestion = {
+  lineItemId: number
+  suggestedCostPackageId: number
+  packageCode: string | null
+  packageName: string
+  timesConfirmed: number
+  /** which tier of the learned-mapping recall produced this suggestion. */
+  source: "product" | "category"
+}
+
+type LearnedCandidate = {
+  code: string | null
+  name: string | null
+  timesConfirmed: number
+  supplierId: number | null
+}
+
+/**
+ * Learned-mapping suggestions for a set of invoices' UNCLASSIFIED line items.
+ * This is a read-only recall against `classification_mappings` — the exact
+ * same table `commitInvoice` (app/actions/invoices.ts) writes to and the same
+ * precedence the review flow uses (`loadLearnedMappings` /
+ * `classifyLinesToPlan` in app/actions/enrichment.ts):
+ *   1. a supplier-scoped PRODUCT key (normalised description) — preferred,
+ *      and among several matches for the same key the supplier-specific row
+ *      wins over the global one, then the higher `times_confirmed` wins;
+ *   2. a global CATEGORY key, only when no product-level match exists.
+ * Never calls AI and never guesses — a line with no matching mapping (or
+ * whose learned package code/name doesn't resolve onto ITS OWN project's
+ * actual cost packages) simply has no suggestion.
+ */
+export async function getClassificationSuggestions(invoiceIds: number[]): Promise<ClassificationSuggestion[]> {
+  if (invoiceIds.length === 0) return []
+
+  const lineRows = await db.execute(sql`
+    SELECT li.id AS line_item_id, li.description, inv.supplier_id, inv.project_id,
+      p.category AS product_category
+    FROM invoice_line_items li
+    JOIN invoices inv ON inv.id = li.invoice_id
+    LEFT JOIN products p ON p.id = li.product_id
+    WHERE li.invoice_id IN ${invoiceIds} AND li.cost_package_id IS NULL
+  `)
+
+  const lines = (lineRows.rows as any[])
+    .map((r) => ({
+      lineItemId: Number(r.line_item_id),
+      key: normaliseDescriptionKey(r.description ?? ""),
+      supplierId: r.supplier_id == null ? null : Number(r.supplier_id),
+      projectId: r.project_id == null ? null : Number(r.project_id),
+      categoryKey: (r.product_category ?? "").trim().toLowerCase(),
+    }))
+    // No project means no cost packages to resolve a suggestion onto — never
+    // invent one (project assignment stays independent, but a concrete
+    // suggestion needs a concrete project's package to point at).
+    .filter((l): l is typeof l & { projectId: number } => l.projectId != null)
+
+  if (lines.length === 0) return []
+
+  const productKeys = [...new Set(lines.map((l) => l.key).filter(Boolean))]
+  const categoryKeys = [...new Set(lines.map((l) => l.categoryKey).filter(Boolean))]
+  const projectIds = [...new Set(lines.map((l) => l.projectId))]
+
+  const [productRows, categoryRows, packageRows] = await Promise.all([
+    productKeys.length
+      ? db.execute(sql`
+          SELECT key_value, supplier_id, cost_package_code, cost_package_name, times_confirmed
+          FROM classification_mappings
+          WHERE key_kind = 'product' AND key_value IN ${productKeys}
+        `)
+      : Promise.resolve({ rows: [] as any[] }),
+    categoryKeys.length
+      ? db.execute(sql`
+          SELECT key_value, cost_package_code, cost_package_name, times_confirmed
+          FROM classification_mappings
+          WHERE key_kind = 'category' AND key_value IN ${categoryKeys} AND supplier_id IS NULL
+        `)
+      : Promise.resolve({ rows: [] as any[] }),
+    db.execute(sql`
+      SELECT id, project_id, code, name FROM cost_packages WHERE project_id IN ${projectIds}
+    `),
+  ])
+
+  // Group product-level rows by key; the actual "best" row depends on each
+  // LINE's own supplier, so the pick happens per line, not here.
+  const productRowsByKey = new Map<string, LearnedCandidate[]>()
+  for (const r of productRows.rows as any[]) {
+    const key = r.key_value as string
+    const list = productRowsByKey.get(key) ?? []
+    list.push({
+      code: r.cost_package_code,
+      name: r.cost_package_name,
+      timesConfirmed: Number(r.times_confirmed),
+      supplierId: r.supplier_id == null ? null : Number(r.supplier_id),
+    })
+    productRowsByKey.set(key, list)
+  }
+
+  function bestProductMatch(key: string, supplierId: number | null): LearnedCandidate | null {
+    const candidates = productRowsByKey.get(key)
+    if (!candidates || candidates.length === 0) return null
+    const supplierSpecific = candidates.filter((c) => c.supplierId != null && c.supplierId === supplierId)
+    const pool = supplierSpecific.length > 0 ? supplierSpecific : candidates.filter((c) => c.supplierId == null)
+    if (pool.length === 0) return null
+    return pool.reduce((best, c) => (c.timesConfirmed > best.timesConfirmed ? c : best))
+  }
+
+  // Category mappings are always global (supplier_id IS NULL) — highest
+  // times_confirmed wins per key.
+  const categoryByKey = new Map<string, LearnedCandidate>()
+  for (const r of categoryRows.rows as any[]) {
+    const key = r.key_value as string
+    const candidate: LearnedCandidate = {
+      code: r.cost_package_code,
+      name: r.cost_package_name,
+      timesConfirmed: Number(r.times_confirmed),
+      supplierId: null,
+    }
+    const existing = categoryByKey.get(key)
+    if (!existing || candidate.timesConfirmed > existing.timesConfirmed) categoryByKey.set(key, candidate)
+  }
+
+  const packagesByProject = new Map<number, ProjectPackage[]>()
+  for (const r of packageRows.rows as any[]) {
+    const pid = Number(r.project_id)
+    const list = packagesByProject.get(pid) ?? []
+    list.push({ id: Number(r.id), code: r.code, name: r.name })
+    packagesByProject.set(pid, list)
+  }
+
+  const suggestions: ClassificationSuggestion[] = []
+  for (const line of lines) {
+    const packages = packagesByProject.get(line.projectId) ?? []
+    if (packages.length === 0) continue
+
+    let match: LearnedCandidate | null = line.key ? bestProductMatch(line.key, line.supplierId) : null
+    let source: "product" | "category" = "product"
+    if (!match && line.categoryKey) {
+      const cat = categoryByKey.get(line.categoryKey)
+      if (cat) {
+        match = cat
+        source = "category"
+      }
+    }
+    if (!match) continue
+
+    // Resolve the canonical code/name onto THIS invoice's own project's
+    // actual cost packages (code first, then exact name) — same resolution
+    // rule used everywhere else (lib/cost-plan.ts). If it doesn't resolve,
+    // there is genuinely no usable suggestion; never invent a package.
+    const pkg = resolveProjectPackage(match.code, match.name, packages)
+    if (!pkg) continue
+
+    suggestions.push({
+      lineItemId: line.lineItemId,
+      suggestedCostPackageId: pkg.id,
+      packageCode: pkg.code,
+      packageName: pkg.name,
+      timesConfirmed: match.timesConfirmed,
+      source,
+    })
+  }
+
+  return suggestions
 }

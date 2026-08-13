@@ -9,8 +9,9 @@ import {
   priceRecords,
   supplierAliases,
   classificationMappings,
+  costPackages,
 } from "@/lib/db/schema"
-import { and, eq, ilike, sql } from "drizzle-orm"
+import { and, eq, ilike, inArray, isNull, ne, sql } from "drizzle-orm"
 import { revalidatePath } from "next/cache"
 import { normaliseSupplierName, normaliseDocNumber } from "@/lib/invoice-identity"
 import { normaliseDescriptionKey } from "@/lib/normalisation/products"
@@ -430,6 +431,208 @@ export async function commitInvoice(input: CommitInvoiceInput): Promise<CommitRe
     }
     throw e
   }
+}
+
+// ---------------------------------------------------------------------------
+// Inline line-item classification (post-commit, from the invoices page)
+// ---------------------------------------------------------------------------
+
+/** The transaction type db.transaction() hands its callback. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+type ClassifiableLine = {
+  id: number
+  description: string
+  productId: number | null
+  normalisedUnit: string | null
+  projectId: number | null
+  supplierId: number
+  productCategory: string | null
+}
+
+async function loadClassifiableLine(tx: Tx, lineItemId: number): Promise<ClassifiableLine | null> {
+  const rows = await tx
+    .select({
+      id: invoiceLineItems.id,
+      description: invoiceLineItems.description,
+      productId: invoiceLineItems.productId,
+      normalisedUnit: invoiceLineItems.normalisedUnit,
+      projectId: invoices.projectId,
+      supplierId: invoices.supplierId,
+      productCategory: products.category,
+    })
+    .from(invoiceLineItems)
+    .innerJoin(invoices, eq(invoices.id, invoiceLineItems.invoiceId))
+    .leftJoin(products, eq(products.id, invoiceLineItems.productId))
+    .where(eq(invoiceLineItems.id, lineItemId))
+    .limit(1)
+  return rows[0] ?? null
+}
+
+/**
+ * Set (or clear) a single line item's cost package and, on assignment only,
+ * write the SAME learned mappings `commitInvoice` writes on confirm — a
+ * supplier-scoped PRODUCT key plus a global CATEGORY fallback, both upserted
+ * with `times_confirmed` incremented on conflict against the identical
+ * partial-index target `(key_kind, key_value, coalesce(supplier_id, 0))`.
+ * This is one learning system: a mapping learned here is indistinguishable
+ * in shape from one learned at commit time.
+ *
+ * Guards (the application is the only protection — there are no DB foreign
+ * keys): the line's invoice must exist, and a non-null cost package must
+ * belong to the invoice's OWN project. Clearing (costPackageId = null) is
+ * always allowed and never writes to classification_mappings — clearing a
+ * line is not a human confirmation of anything.
+ */
+async function applyLineClassification(
+  tx: Tx,
+  lineItemId: number,
+  costPackageId: number | null,
+): Promise<ClassifiableLine> {
+  const line = await loadClassifiableLine(tx, lineItemId)
+  if (!line) {
+    throw new Error(`Line item ${lineItemId} (or its invoice) was not found.`)
+  }
+
+  if (costPackageId == null) {
+    await tx.update(invoiceLineItems).set({ costPackageId: null }).where(eq(invoiceLineItems.id, lineItemId))
+    return line
+  }
+
+  const [pkg] = await tx
+    .select({ id: costPackages.id, projectId: costPackages.projectId, code: costPackages.code, name: costPackages.name })
+    .from(costPackages)
+    .where(eq(costPackages.id, costPackageId))
+    .limit(1)
+  if (!pkg) {
+    throw new Error(`Cost package ${costPackageId} was not found.`)
+  }
+  if (line.projectId == null) {
+    throw new Error("This invoice has no project assigned; assign a project before classifying its lines.")
+  }
+  if (pkg.projectId !== line.projectId) {
+    throw new Error(`Cost package "${pkg.code ?? pkg.name}" belongs to a different project than this invoice.`)
+  }
+
+  await tx.update(invoiceLineItems).set({ costPackageId }).where(eq(invoiceLineItems.id, lineItemId))
+
+  // Learn this confirmation — identical shape to commitInvoice's upsert.
+  const productKey = normaliseDescriptionKey(line.description)
+  if (productKey) {
+    await tx.execute(sql`
+      INSERT INTO classification_mappings
+        (key_kind, key_value, supplier_id, product_id, cost_package_code,
+         cost_package_name, category, normalised_unit, times_confirmed)
+      VALUES
+        ('product', ${productKey}, ${line.supplierId}, ${line.productId ?? null},
+         ${pkg.code ?? null}, ${pkg.name ?? null}, ${line.productCategory ?? null},
+         ${line.normalisedUnit ?? null}, 1)
+      ON CONFLICT (key_kind, key_value, (coalesce(supplier_id, 0)))
+      DO UPDATE SET
+        product_id = COALESCE(EXCLUDED.product_id, classification_mappings.product_id),
+        cost_package_code = COALESCE(EXCLUDED.cost_package_code, classification_mappings.cost_package_code),
+        cost_package_name = COALESCE(EXCLUDED.cost_package_name, classification_mappings.cost_package_name),
+        category = COALESCE(EXCLUDED.category, classification_mappings.category),
+        normalised_unit = COALESCE(EXCLUDED.normalised_unit, classification_mappings.normalised_unit),
+        times_confirmed = classification_mappings.times_confirmed + 1,
+        updated_at = now()
+    `)
+
+    const catKey = (line.productCategory ?? "").trim().toLowerCase()
+    if (catKey) {
+      await tx.execute(sql`
+        INSERT INTO classification_mappings
+          (key_kind, key_value, supplier_id, cost_package_code, cost_package_name, category, times_confirmed)
+        VALUES
+          ('category', ${catKey}, NULL, ${pkg.code ?? null}, ${pkg.name ?? null}, ${line.productCategory ?? null}, 1)
+        ON CONFLICT (key_kind, key_value, (coalesce(supplier_id, 0)))
+        DO UPDATE SET
+          cost_package_code = COALESCE(EXCLUDED.cost_package_code, classification_mappings.cost_package_code),
+          cost_package_name = COALESCE(EXCLUDED.cost_package_name, classification_mappings.cost_package_name),
+          times_confirmed = classification_mappings.times_confirmed + 1,
+          updated_at = now()
+      `)
+    }
+  }
+
+  return line
+}
+
+/**
+ * Classify (or clear) one line item from the invoices page. `costPackageId
+ * = null` clears the line back to unclassified; any other value is treated
+ * as a human confirmation and taught to `classification_mappings` (Section
+ * 11 of the handover / non-negotiable #7).
+ */
+export async function classifyInvoiceLine(lineItemId: number, costPackageId: number | null): Promise<{ success: true }> {
+  await db.transaction(async (tx) => {
+    await applyLineClassification(tx, lineItemId, costPackageId)
+  })
+  revalidatePath("/invoices")
+  revalidatePath("/commercial")
+  return { success: true }
+}
+
+/**
+ * Same as `classifyInvoiceLine`, but a non-null assignment also propagates to
+ * OTHER unclassified line items — any invoice, same supplier — whose
+ * normalised description produces the identical mapping key. Scoped to the
+ * SAME project as the chosen package: a cost package belongs to one project,
+ * and re-attributing another project's spend onto it would double-count
+ * against that project's cost-package (and downstream funding) totals
+ * (non-negotiable #3/#8). Never overwrites a line that already carries a
+ * classification. Clearing never cascades — it stays a single explicit
+ * action on one line.
+ *
+ * Returns the total number of line items updated (the target line plus any
+ * matches).
+ */
+export async function classifyMatchingLines(
+  lineItemId: number,
+  costPackageId: number | null,
+): Promise<{ updatedCount: number }> {
+  if (costPackageId == null) {
+    await classifyInvoiceLine(lineItemId, null)
+    return { updatedCount: 1 }
+  }
+
+  const updatedCount = await db.transaction(async (tx) => {
+    const line = await applyLineClassification(tx, lineItemId, costPackageId)
+    const key = normaliseDescriptionKey(line.description)
+    if (!key) return 1
+
+    // line.projectId is guaranteed non-null here: applyLineClassification
+    // throws above for a non-null costPackageId when the invoice has no
+    // project.
+    const projectId = line.projectId as number
+
+    const candidates = await tx
+      .select({ id: invoiceLineItems.id, description: invoiceLineItems.description })
+      .from(invoiceLineItems)
+      .innerJoin(invoices, eq(invoices.id, invoiceLineItems.invoiceId))
+      .where(
+        and(
+          eq(invoices.supplierId, line.supplierId),
+          eq(invoices.projectId, projectId),
+          isNull(invoiceLineItems.costPackageId),
+          ne(invoiceLineItems.id, lineItemId),
+        ),
+      )
+
+    const matchIds = candidates
+      .filter((c) => normaliseDescriptionKey(c.description) === key)
+      .map((c) => c.id)
+
+    if (matchIds.length > 0) {
+      await tx.update(invoiceLineItems).set({ costPackageId }).where(inArray(invoiceLineItems.id, matchIds))
+    }
+
+    return 1 + matchIds.length
+  })
+
+  revalidatePath("/invoices")
+  revalidatePath("/commercial")
+  return { updatedCount }
 }
 
 export type PaymentStatus = "unpaid" | "paid" | "part_paid"

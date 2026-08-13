@@ -52,7 +52,10 @@ const SCOPES = [
   // possible from here. Writes remain double-gated behind XERO_WRITE_ENABLED
   // and are only ever issued per an explicit owner request.
   "accounting.banktransactions",
-  "accounting.attachments.read",
+  // Full attachments: the owner's workflow includes uploading invoice
+  // documents to Xero retrospectively. This completes the scope set so no
+  // further consent round-trips are needed.
+  "accounting.attachments",
 ].join(" ")
 
 /** How long a pending authorisation attempt (PKCE verifier) stays redeemable. Xero's own consent screen is normally completed in well under this. */

@@ -284,10 +284,15 @@ async function TableSection({
   page: number
 }) {
   const offset = (page - 1) * PAGE_SIZE
-  const [invoices, summary] = await Promise.all([
+  const [invoices, summary, projectOptions] = await Promise.all([
     getInvoices({ ...filters, sort, direction, limit: PAGE_SIZE, offset }),
     getInvoiceSummary(filters),
+    getProjectOptions(),
   ])
+  // InvoiceRow carries the project's name, not its id. Resolve id from the
+  // existing project options rather than touching lib/queries.ts — needed so
+  // the inline classifier can fetch the RIGHT project's cost packages.
+  const projectIdByName = new Map(projectOptions.map((p) => [p.name, p.id]))
 
   const hasFilters = Object.values(filters).some((v) => v !== undefined)
 
@@ -386,7 +391,12 @@ async function TableSection({
             </thead>
             <tbody>
               {invoices.map((inv) => (
-                <InvoiceTableRow key={inv.id} inv={inv} columnCount={columns.length} />
+                <InvoiceTableRow
+                  key={inv.id}
+                  inv={inv}
+                  columnCount={columns.length}
+                  projectId={inv.projectName ? (projectIdByName.get(inv.projectName) ?? null) : null}
+                />
               ))}
             </tbody>
           </table>

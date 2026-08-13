@@ -47,10 +47,11 @@ const SCOPES = [
   "accounting.payments",
   "accounting.reports.aged.read",
   "accounting.reports.profitandloss.read",
-  // Read-only additions (2026-08-13): direct bank payments ("spend money")
-  // and bill attachments — needed to see owner/subcontractor payments made
-  // without a bill, and to retrieve invoice documents for Gilbert OS.
-  "accounting.banktransactions.read",
+  // 2026-08-13: bank transactions at full access — the owner instructed that
+  // corrections to Xero records (e.g. duplicate bank payments) must be
+  // possible from here. Writes remain double-gated behind XERO_WRITE_ENABLED
+  // and are only ever issued per an explicit owner request.
+  "accounting.banktransactions",
   "accounting.attachments.read",
 ].join(" ")
 

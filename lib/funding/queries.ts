@@ -110,6 +110,69 @@ async function getDrawdowns(budgetId: number): Promise<DrawdownInput[]> {
   }))
 }
 
+export type DrawdownAllocation = {
+  id: number
+  fundingBudgetLineId: number
+  amount: number
+}
+
+export type DrawdownEvent = {
+  id: number
+  eventKey: string
+  label: string
+  eventDate: string | null
+  certifiedTotal: number | null
+  cashReceived: number | null
+  receivedDate: string | null
+  directPayment: boolean
+  notes: string | null
+  allocations: DrawdownAllocation[]
+}
+
+/**
+ * Every Goldentree drawdown/payment EVENT for a funding budget (one per
+ * matrix column — a valuation, a reimbursement, a direct payment), each with
+ * its per-funding-line allocations attached. Read-only, mirrors getDrawdowns'
+ * shape/idiom above. Returns [] until the drawdown-events ingest has run —
+ * `funding_drawdown_events`/`funding_drawdown_allocations` start empty.
+ */
+export async function getDrawdownEvents(budgetId: number): Promise<DrawdownEvent[]> {
+  const eventRows = await db.execute(sql`
+    SELECT id, event_key, label, event_date, certified_total, cash_received, received_date, direct_payment, notes
+    FROM funding_drawdown_events
+    WHERE funding_budget_id = ${budgetId}
+    ORDER BY id ASC
+  `)
+  const events = eventRows.rows as any[]
+  if (events.length === 0) return []
+
+  const allocRows = await db.execute(sql`
+    SELECT a.id, a.event_id, a.funding_budget_line_id, a.amount
+    FROM funding_drawdown_allocations a
+    JOIN funding_drawdown_events e ON e.id = a.event_id
+    WHERE e.funding_budget_id = ${budgetId}
+  `)
+  const allocsByEvent = new Map<number, DrawdownAllocation[]>()
+  for (const r of allocRows.rows as any[]) {
+    const list = allocsByEvent.get(r.event_id) ?? []
+    list.push({ id: r.id, fundingBudgetLineId: r.funding_budget_line_id, amount: n(r.amount) })
+    allocsByEvent.set(r.event_id, list)
+  }
+
+  return events.map((r) => ({
+    id: r.id,
+    eventKey: r.event_key,
+    label: r.label,
+    eventDate: r.event_date ?? null,
+    certifiedTotal: r.certified_total == null ? null : n(r.certified_total),
+    cashReceived: r.cash_received == null ? null : n(r.cash_received),
+    receivedDate: r.received_date ?? null,
+    directPayment: r.direct_payment,
+    notes: r.notes ?? null,
+    allocations: allocsByEvent.get(r.id) ?? [],
+  }))
+}
+
 /** Net actual spend per cost package for a project (credits already negative). */
 export async function getPackageSpend(projectId: number): Promise<PackageSpendInput[]> {
   const rows = await db.execute(sql`

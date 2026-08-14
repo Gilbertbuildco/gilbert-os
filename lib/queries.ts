@@ -1003,8 +1003,9 @@ export async function getQuotesVsActual(projectId: number): Promise<QuotesVsActu
         COALESCE(q.supplier_id::text, 'raw:' || lower(btrim(coalesce(q.supplier_name_raw, '')))) AS group_key,
         q.supplier_id,
         MAX(q.supplier_name_raw) AS supplier_name_raw,
-        COUNT(*) FILTER (WHERE q.status IN ('open', 'accepted')) AS quote_count,
-        COALESCE(SUM(COALESCE(q.net, q.gross, 0)) FILTER (WHERE q.status IN ('open', 'accepted')), 0) AS quoted_total
+        -- Owner rule (2026-08-14): only ACCEPTED quotes count toward totals.
+        COUNT(*) FILTER (WHERE q.status = 'accepted') AS quote_count,
+        COALESCE(SUM(COALESCE(q.net, q.gross, 0)) FILTER (WHERE q.status = 'accepted'), 0) AS quoted_total
       FROM quotes q
       WHERE q.project_id = ${projectId}
       GROUP BY 1, 2

@@ -30,10 +30,23 @@ export type PackageBreakdown = {
   shares: LineShare[]
 }
 
+/** One drawdown event's allocation to this specific funding line. */
+export type LineDrawdownAllocation = {
+  eventId: number
+  eventLabel: string
+  eventDate: string | null
+  receivedDate: string | null
+  amount: number
+  directPayment: boolean
+  cashReceived: number | null
+}
+
 export type FundingLineDrillDownData = {
   line: LineResult
   packages: PackageBreakdown[]
   lineItems: PackageLineItemRow[]
+  /** This line's share of every drawdown event that allocated to it, in schedule order. */
+  drawdownHistory: LineDrawdownAllocation[]
 }
 
 interface Props {
@@ -60,7 +73,7 @@ const RECON_TOLERANCE = 0.01
 
 /** Read-only explain view for one funding line: how its actual-spend figure was built. */
 export function FundingLineDrillDown({ data, closeHref }: Props) {
-  const { line, packages, lineItems } = data
+  const { line, packages, lineItems, drawdownHistory } = data
 
   const lineItemColumns: Column<PackageLineItemRow>[] = [
     {
@@ -138,6 +151,91 @@ export function FundingLineDrillDown({ data, closeHref }: Props) {
           hint={!line.hasForecast ? "no forecast entered" : undefined}
         />
       </div>
+
+      {line.fundingDrawn != null ? (
+        <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard
+              label="Funding drawn"
+              value={formatGBP(line.fundingDrawn, { decimals: true })}
+              hint={line.fundingCertified != null ? `Certified ${formatGBP(line.fundingCertified, { decimals: true })}` : undefined}
+            />
+            <MetricCard
+              label="Left to draw"
+              value={line.fundingRemaining != null ? formatGBP(line.fundingRemaining, { decimals: true }) : undefined}
+              unconnected={line.fundingRemaining == null}
+              hint="Original allowance minus funding drawn so far"
+            />
+            {line.amountSpentNotYetFunded != null && line.amountSpentNotYetFunded > 0 ? (
+              <MetricCard
+                label="Spent, not yet drawn from lender"
+                value={formatGBP(line.amountSpentNotYetFunded, { decimals: true })}
+                hint="Cash cost incurred ahead of the lender reimbursing it"
+              />
+            ) : null}
+            {line.amountFundedAheadOfCost != null && line.amountFundedAheadOfCost > 0 ? (
+              <MetricCard
+                label="Drawn ahead of spend"
+                value={formatGBP(line.amountFundedAheadOfCost, { decimals: true })}
+                hint="Funding drawn from the lender ahead of cash spend recorded here"
+              />
+            ) : null}
+          </div>
+          {(line.amountSpentNotYetFunded ?? 0) === 0 && (line.amountFundedAheadOfCost ?? 0) === 0 ? (
+            <p className="text-xs text-success">Funding drawn matches actual spend to date on this line.</p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {drawdownHistory.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold text-foreground">Drawdown history</h3>
+          <div className="overflow-hidden rounded-md border border-border">
+            <table className="w-full border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
+                  <th scope="col" className="px-3 py-2 text-left font-semibold">
+                    Event
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-left font-semibold">
+                    Date
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-left font-semibold">
+                    Type
+                  </th>
+                  <th scope="col" className="px-3 py-2 text-right font-semibold">
+                    Amount
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {drawdownHistory.map((h) => (
+                  <tr key={h.eventId} className="border-b border-border last:border-b-0">
+                    <td className="px-3 py-2 text-foreground">{h.eventLabel}</td>
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {formatDate(h.eventDate ?? h.receivedDate) ?? "—"}
+                    </td>
+                    <td className="px-3 py-2">
+                      {h.directPayment ? (
+                        <StatusBadge variant="info">Direct payment</StatusBadge>
+                      ) : h.cashReceived != null ? (
+                        <StatusBadge variant="success" dot>
+                          Received to bank
+                        </StatusBadge>
+                      ) : (
+                        <StatusBadge variant="neutral">Certified — not yet matched</StatusBadge>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                      {formatGBP(h.amount, { decimals: true })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
 
       {packages.length === 0 ? (
         <EmptyState

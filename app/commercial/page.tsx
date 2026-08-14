@@ -3,7 +3,12 @@ import { PageHeader } from "@/components/page-header"
 import { CommercialView } from "@/components/commercial-view"
 import { FundingVsActual } from "@/components/funding-vs-actual"
 import { QuotesVsActualView } from "@/components/quotes-vs-actual"
-import type { FundingLineDrillDownData, PackageBreakdown, ApportionmentBasis } from "@/components/funding-line-drilldown"
+import type {
+  FundingLineDrillDownData,
+  PackageBreakdown,
+  ApportionmentBasis,
+  LineDrawdownAllocation,
+} from "@/components/funding-line-drilldown"
 import { cn } from "@/lib/utils"
 import {
   getProjectOptions,
@@ -14,7 +19,7 @@ import {
   getLineItemsForCostPackages,
   getQuotesVsActual,
 } from "@/lib/queries"
-import { getFundingCommercial } from "@/lib/funding/queries"
+import { getFundingCommercial, getDrawdownEvents, type DrawdownEvent } from "@/lib/funding/queries"
 import { apportionSpend, type FundingLineInput, type MappingInput } from "@/lib/funding/calculations"
 
 export const dynamic = "force-dynamic"
@@ -56,6 +61,7 @@ export default async function CommercialPage({
     : [[], []]
 
   const funding = selected && tab === "funding" ? await getFundingCommercial(selected.id) : null
+  const drawdownEvents: DrawdownEvent[] = funding ? await getDrawdownEvents(funding.budget.id) : []
   const quotesVsActual = selected && tab === "quotes" ? await getQuotesVsActual(selected.id) : null
 
   const expandedLineId = tab === "funding" && line != null && line.trim() !== "" ? Number(line) : null
@@ -107,7 +113,24 @@ export default async function CommercialPage({
         }
       })
 
-      drilldown = { line: targetLine, packages: packageBreakdown, lineItems: packageLineItems }
+      // This line's share of every drawdown event that allocated to it, in schedule order —
+      // reads straight off the same events shown in the timeline below, never recomputed.
+      const drawdownHistory: LineDrawdownAllocation[] = drawdownEvents
+        .flatMap((event) =>
+          event.allocations
+            .filter((a) => a.fundingBudgetLineId === expandedLineId)
+            .map((a) => ({
+              eventId: event.id,
+              eventLabel: event.label,
+              eventDate: event.eventDate,
+              receivedDate: event.receivedDate,
+              amount: a.amount,
+              directPayment: event.directPayment,
+              cashReceived: event.cashReceived,
+            })),
+        )
+
+      drilldown = { line: targetLine, packages: packageBreakdown, lineItems: packageLineItems, drawdownHistory }
     }
   }
 
@@ -213,6 +236,7 @@ export default async function CommercialPage({
             selectedSlug={selectedSlug}
             expandedLineId={expandedLineId}
             drilldown={drilldown}
+            drawdownEvents={drawdownEvents}
           />
         </main>
       ) : (

@@ -6,7 +6,8 @@ import { MetricCard } from "@/components/metric-card"
 import { EmptyState } from "@/components/empty-state"
 import { StatusBadge } from "@/components/status-badge"
 import { FundingLineDrillDown, type FundingLineDrillDownData } from "@/components/funding-line-drilldown"
-import type { FundingCommercial } from "@/lib/funding/queries"
+import { DrawdownTimeline } from "@/components/drawdown-timeline"
+import type { FundingCommercial, DrawdownEvent } from "@/lib/funding/queries"
 import type { LineResult } from "@/lib/funding/calculations"
 
 interface Props {
@@ -18,9 +19,18 @@ interface Props {
   expandedLineId: number | null
   /** Pre-assembled drill-down content for `expandedLineId`, computed server-side. */
   drilldown: FundingLineDrillDownData | null
+  /** Every Goldentree drawdown/payment event for this budget, in schedule order. */
+  drawdownEvents: DrawdownEvent[]
 }
 
-export function FundingVsActual({ data, projectSelected, selectedSlug, expandedLineId, drilldown }: Props) {
+export function FundingVsActual({
+  data,
+  projectSelected,
+  selectedSlug,
+  expandedLineId,
+  drilldown,
+  drawdownEvents,
+}: Props) {
   if (!projectSelected) {
     return (
       <EmptyState
@@ -116,6 +126,28 @@ export function FundingVsActual({ data, projectSelected, selectedSlug, expandedL
           <span className={l.favourable ? "text-success" : "text-danger"}>
             {l.variancePct.toFixed(1)}%
           </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
+      key: "fundingDrawn",
+      header: "Funding drawn",
+      align: "right",
+      render: (l) =>
+        l.fundingDrawn != null ? (
+          formatGBP(l.fundingDrawn, { decimals: true })
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        ),
+    },
+    {
+      key: "fundingRemaining",
+      header: "Left to draw",
+      align: "right",
+      render: (l) =>
+        l.fundingRemaining != null ? (
+          formatGBP(l.fundingRemaining, { decimals: true })
         ) : (
           <span className="text-muted-foreground">—</span>
         ),
@@ -247,6 +279,8 @@ export function FundingVsActual({ data, projectSelected, selectedSlug, expandedL
           {formatGBP(unmappedSpend, { decimals: true })}
         </span>
       </section>
+
+      <DrawdownTimeline events={drawdownEvents} lines={lines} facilityTotal={data.budget.originalTotal} />
     </div>
   )
 }

@@ -932,3 +932,138 @@ export async function getClassificationSuggestions(invoiceIds: number[]): Promis
 
   return suggestions
 }
+
+/**
+ * QUOTED VS ACTUAL (quotes layer)
+ * ---------------------------------------------------------------------------
+ * Per supplier (that has a quote and/or confirmed spend on this project):
+ *   quotedTotal        SUM of quotes.net (falling back to gross only when net
+ *                       is null) for status IN ('open','accepted') — 'superseded'
+ *                       quotes are excluded so a stale revision never inflates
+ *                       what's "still quoted". Never sums across revisions
+ *                       of the same job — that de-duplication already happened
+ *                       at ingestion (scripts/ingest-quotes-2026-08.mts), this
+ *                       query just respects the status it wrote.
+ *   actualNet           SUM of net on this project's CONFIRMED invoices for
+ *                       that supplier. Credits are stored negative on
+ *                       `invoices`, so a plain SUM already nets them down —
+ *                       matches every other actual-spend query in this file.
+ *   remainingVsQuote     quotedTotal - actualNet. May be NEGATIVE — that means
+ *                       actual spend has already exceeded what was quoted;
+ *                       this function reports that, it never hides it.
+ *   unpaidCommitted     SUM of net on this project's CONFIRMED invoices for
+ *                       that supplier where payment_status IN ('unpaid',
+ *                       'part_paid') — committed spend not yet paid out.
+ *
+ * SUPPLIER MATCHING IS SUPPLIER_ID ONLY — NEVER BY NAME. A quote whose
+ * supplier_id didn't resolve at ingestion (quote-only company, no existing
+ * Gilbert OS supplier record) is grouped and shown on its own row keyed by
+ * its verbatim supplier_name_raw, with actualNet/unpaidCommitted staying 0 —
+ * it is NEVER fuzzy-matched against an invoice supplier's name to find
+ * "actual" spend. Guessing that match would risk attributing one company's
+ * real spend to a different company's quote (non-negotiable #1 and #3).
+ *
+ * Pure read — no DB writes, no mutation of inputs.
+ */
+export type QuoteVsActualSupplierRow = {
+  supplierId: number | null
+  supplierName: string
+  quoteCount: number
+  quotedTotal: number
+  actualNet: number
+  remainingVsQuote: number
+  unpaidCommitted: number
+}
+
+export type QuoteDrillDownRow = {
+  id: number
+  supplierId: number | null
+  supplierName: string
+  reference: string | null
+  quoteDate: string | null
+  description: string | null
+  scope: string | null
+  net: number | null
+  vat: number | null
+  gross: number | null
+  status: string | null
+  notes: string | null
+}
+
+export type QuotesVsActual = {
+  suppliers: QuoteVsActualSupplierRow[]
+  quotes: QuoteDrillDownRow[]
+}
+
+export async function getQuotesVsActual(projectId: number): Promise<QuotesVsActual> {
+  const supplierRows = await db.execute(sql`
+    WITH quote_agg AS (
+      SELECT
+        COALESCE(q.supplier_id::text, 'raw:' || lower(btrim(coalesce(q.supplier_name_raw, '')))) AS group_key,
+        q.supplier_id,
+        MAX(q.supplier_name_raw) AS supplier_name_raw,
+        COUNT(*) FILTER (WHERE q.status IN ('open', 'accepted')) AS quote_count,
+        COALESCE(SUM(COALESCE(q.net, q.gross, 0)) FILTER (WHERE q.status IN ('open', 'accepted')), 0) AS quoted_total
+      FROM quotes q
+      WHERE q.project_id = ${projectId}
+      GROUP BY 1, 2
+    ),
+    invoice_agg AS (
+      SELECT
+        inv.supplier_id::text AS group_key,
+        inv.supplier_id,
+        COALESCE(SUM(inv.net), 0) AS actual_net,
+        COALESCE(SUM(inv.net) FILTER (WHERE inv.payment_status IN ('unpaid', 'part_paid')), 0) AS unpaid_committed
+      FROM invoices inv
+      WHERE inv.project_id = ${projectId} AND inv.status = 'confirmed'
+      GROUP BY 1, 2
+    )
+    SELECT
+      COALESCE(qa.supplier_id, ia.supplier_id) AS supplier_id,
+      COALESCE(s.name, qa.supplier_name_raw) AS supplier_name,
+      COALESCE(qa.quote_count, 0) AS quote_count,
+      COALESCE(qa.quoted_total, 0) AS quoted_total,
+      COALESCE(ia.actual_net, 0) AS actual_net,
+      COALESCE(qa.quoted_total, 0) - COALESCE(ia.actual_net, 0) AS remaining_vs_quote,
+      COALESCE(ia.unpaid_committed, 0) AS unpaid_committed
+    FROM quote_agg qa
+    FULL OUTER JOIN invoice_agg ia ON ia.group_key = qa.group_key
+    LEFT JOIN suppliers s ON s.id = COALESCE(qa.supplier_id, ia.supplier_id)
+    ORDER BY quoted_total DESC, actual_net DESC
+  `)
+
+  const quoteRows = await db.execute(sql`
+    SELECT q.id, q.supplier_id, COALESCE(s.name, q.supplier_name_raw) AS supplier_name,
+      q.reference, q.quote_date, q.description, q.scope, q.net, q.vat, q.gross, q.status, q.notes
+    FROM quotes q
+    LEFT JOIN suppliers s ON s.id = q.supplier_id
+    WHERE q.project_id = ${projectId}
+    ORDER BY supplier_name ASC, q.quote_date ASC NULLS LAST, q.id ASC
+  `)
+
+  return {
+    suppliers: (supplierRows.rows as any[]).map((r) => ({
+      supplierId: r.supplier_id == null ? null : Number(r.supplier_id),
+      supplierName: r.supplier_name ?? "(unknown supplier)",
+      quoteCount: n(r.quote_count),
+      quotedTotal: n(r.quoted_total),
+      actualNet: n(r.actual_net),
+      remainingVsQuote: n(r.remaining_vs_quote),
+      unpaidCommitted: n(r.unpaid_committed),
+    })),
+    quotes: (quoteRows.rows as any[]).map((r) => ({
+      id: Number(r.id),
+      supplierId: r.supplier_id == null ? null : Number(r.supplier_id),
+      supplierName: r.supplier_name ?? "(unknown supplier)",
+      reference: r.reference ?? null,
+      quoteDate: r.quote_date ? String(r.quote_date) : null,
+      description: r.description ?? null,
+      scope: r.scope ?? null,
+      net: r.net == null ? null : n(r.net),
+      vat: r.vat == null ? null : n(r.vat),
+      gross: r.gross == null ? null : n(r.gross),
+      status: r.status ?? null,
+      notes: r.notes ?? null,
+    })),
+  }
+}

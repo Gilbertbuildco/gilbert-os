@@ -322,6 +322,55 @@ export const fundingDrawdowns = pgTable("funding_drawdowns", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
+/**
+ * A single lender drawdown/payment EVENT from the Goldentree schedule (one
+ * column of the master matrix — e.g. "Val 3 (MIP)" or a direct payment such as
+ * "Target Timber Systems"). One event applies across MANY funding lines; the
+ * per-line breakdown lives in `fundingDrawdownAllocations`.
+ *
+ * Populated verbatim from the lender's own paperwork (non-negotiable #1) —
+ * `certifiedTotal` is the column total as supplied, never derived or forced to
+ * reconcile. `cashReceived`/`receivedDate` are filled ONLY when a bank receipt
+ * has been positively matched; otherwise they stay NULL rather than guessed.
+ * `directPayment` marks an amount the lender paid straight to a third party
+ * (e.g. Target Timber Systems, Protek, a utility) rather than releasing funds
+ * to the borrower.
+ */
+export const fundingDrawdownEvents = pgTable("funding_drawdown_events", {
+  id: serial("id").primaryKey(),
+  fundingBudgetId: integer("funding_budget_id").notNull(),
+  // Stable machine key for this column, e.g. 'val3_mip', 'target_timber_systems_2'.
+  eventKey: text("event_key").notNull(),
+  // Verbatim (or closely transcribed) column label from the lender schedule.
+  label: text("label").notNull(),
+  eventDate: date("event_date"),
+  certifiedTotal: numeric("certified_total"),
+  cashReceived: numeric("cash_received"),
+  receivedDate: date("received_date"),
+  directPayment: boolean("direct_payment").notNull().default(false),
+  notes: text("notes"),
+  sourceFileName: text("source_file_name"),
+  sourceFilePathname: text("source_file_pathname"),
+  sourceFileHash: text("source_file_hash"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
+/**
+ * Per-funding-line share of a drawdown event — the reconstructed grid cell.
+ * `amount` is transcribed verbatim from the lender's matrix; the sum of a
+ * line's allocations plus its "amount left to draw" must equal the line's
+ * immutable `originalAmount` (checked by the ingestion report, never forced).
+ * UNIQUE (event_id, funding_budget_line_id) so a re-run of the ingest script
+ * can safely upsert without ever double-counting a cell.
+ */
+export const fundingDrawdownAllocations = pgTable("funding_drawdown_allocations", {
+  id: serial("id").primaryKey(),
+  eventId: integer("event_id").notNull(),
+  fundingBudgetLineId: integer("funding_budget_line_id").notNull(),
+  amount: numeric("amount").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
 export const variations = pgTable("variations", {
   id: serial("id").primaryKey(),
   projectId: integer("project_id").notNull(),
@@ -428,6 +477,45 @@ export const xeroAccountMap = pgTable("xero_account_map", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
+/**
+ * QUOTES
+ * ---------------------------------------------------------------------------
+ * A supplier/tradesman quote or estimate — distinct from `invoices` (money
+ * actually billed) and from the Goldentree `funding_budget_lines` (the
+ * lender's schedule, which this table never touches or feeds into). Lets the
+ * app compare quoted-vs-actual spend (lib/queries.ts::getQuotesVsActual)
+ * without routing quote documents through the invoice/actual-spend pipeline.
+ * See scripts/add-quotes-table.mjs for the full column-by-column rationale
+ * (kept there, not duplicated here, so there is one place to read it).
+ *
+ * As with every table in this schema, there is no DB-level FK or CHECK
+ * constraint — `supplierId`/`projectId` references and the `status` enum
+ * ('accepted' | 'superseded' | 'open') are validated in application code.
+ * Deliberately no unique index: unlike invoices, the same supplier can
+ * legitimately issue multiple quotes sharing a reference (alternate spec
+ * options, revisions) — duplicate handling is an app-level judgement, not a
+ * hard DB identity.
+ */
+export const quotes = pgTable("quotes", {
+  id: serial("id").primaryKey(),
+  supplierId: integer("supplier_id"),
+  supplierNameRaw: text("supplier_name_raw"),
+  projectId: integer("project_id"),
+  reference: text("reference"),
+  quoteDate: date("quote_date"),
+  description: text("description"),
+  scope: text("scope"),
+  net: numeric("net"),
+  vat: numeric("vat"),
+  gross: numeric("gross"),
+  status: text("status"),
+  sourceFileName: text("source_file_name"),
+  sourceFilePathname: text("source_file_pathname"),
+  sourceFileHash: text("source_file_hash"),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+})
+
 export type Project = typeof projects.$inferSelect
 export type Supplier = typeof suppliers.$inferSelect
 export type Product = typeof products.$inferSelect
@@ -442,7 +530,10 @@ export type FundingBudget = typeof fundingBudgets.$inferSelect
 export type FundingBudgetLine = typeof fundingBudgetLines.$inferSelect
 export type FundingLinePackageMap = typeof fundingLinePackageMap.$inferSelect
 export type FundingDrawdown = typeof fundingDrawdowns.$inferSelect
+export type FundingDrawdownEvent = typeof fundingDrawdownEvents.$inferSelect
+export type FundingDrawdownAllocation = typeof fundingDrawdownAllocations.$inferSelect
 export type XeroConnection = typeof xeroConnections.$inferSelect
 export type XeroSyncState = typeof xeroSyncState.$inferSelect
 export type XeroAccountMap = typeof xeroAccountMap.$inferSelect
 export type XeroOauthState = typeof xeroOauthState.$inferSelect
+export type Quote = typeof quotes.$inferSelect

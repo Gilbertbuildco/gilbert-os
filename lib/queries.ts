@@ -689,6 +689,59 @@ export async function getLineItemsForInvoice(invoiceId: number): Promise<Invoice
   }))
 }
 
+export type PackageLineItemRow = {
+  id: number
+  description: string
+  quantity: number | null
+  unit: string | null
+  lineNet: number
+  costPackageId: number
+  costPackageName: string | null
+  costPackageCode: string | null
+  supplierName: string
+  invoiceId: number
+  invoiceNumber: string | null
+  invoiceDate: string | null
+}
+
+/**
+ * Every confirmed invoice line item classified into one of the given cost
+ * packages, with the supplier/invoice context needed to explain that spend
+ * at a glance — feeds the funding-vs-actual line drill-down. Confirmed
+ * invoices only, matching the actual-spend definition used by the funding
+ * engine (see `getPackageSpend` in lib/funding/queries.ts). Sorted biggest
+ * net first so the largest contributors surface first.
+ */
+export async function getLineItemsForCostPackages(costPackageIds: number[]): Promise<PackageLineItemRow[]> {
+  if (costPackageIds.length === 0) return []
+  const rows = await db.execute(sql`
+    SELECT li.id, li.description, li.quantity, li.unit, li.line_net,
+      li.cost_package_id, cp.name AS cost_package_name, cp.code AS cost_package_code,
+      s.name AS supplier_name,
+      inv.id AS invoice_id, inv.invoice_number, inv.invoice_date
+    FROM invoice_line_items li
+    JOIN invoices inv ON inv.id = li.invoice_id
+    JOIN suppliers s ON s.id = inv.supplier_id
+    LEFT JOIN cost_packages cp ON cp.id = li.cost_package_id
+    WHERE li.cost_package_id IN ${costPackageIds} AND inv.status = 'confirmed'
+    ORDER BY li.line_net DESC, li.id DESC
+  `)
+  return (rows.rows as any[]).map((r) => ({
+    id: r.id,
+    description: r.description,
+    quantity: r.quantity == null ? null : n(r.quantity),
+    unit: r.unit,
+    lineNet: n(r.line_net),
+    costPackageId: r.cost_package_id,
+    costPackageName: r.cost_package_name ?? null,
+    costPackageCode: r.cost_package_code ?? null,
+    supplierName: r.supplier_name,
+    invoiceId: r.invoice_id,
+    invoiceNumber: r.invoice_number,
+    invoiceDate: r.invoice_date ? String(r.invoice_date) : null,
+  }))
+}
+
 export type CostPackageOption = {
   id: number
   code: string | null

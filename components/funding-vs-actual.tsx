@@ -1,9 +1,11 @@
-import { AlertTriangle, Ban } from "lucide-react"
+import Link from "next/link"
+import { AlertTriangle, Ban, ChevronRight } from "lucide-react"
 import { cn, formatGBP } from "@/lib/utils"
 import { DataTable, type Column } from "@/components/data-table"
 import { MetricCard } from "@/components/metric-card"
 import { EmptyState } from "@/components/empty-state"
 import { StatusBadge } from "@/components/status-badge"
+import { FundingLineDrillDown, type FundingLineDrillDownData } from "@/components/funding-line-drilldown"
 import type { FundingCommercial } from "@/lib/funding/queries"
 import type { LineResult } from "@/lib/funding/calculations"
 
@@ -11,9 +13,14 @@ interface Props {
   data: FundingCommercial
   /** Whether a project is currently selected at all (distinct from "no funding budget"). */
   projectSelected: boolean
+  selectedSlug: string | null
+  /** The funding line whose description is currently clicked open, if any. */
+  expandedLineId: number | null
+  /** Pre-assembled drill-down content for `expandedLineId`, computed server-side. */
+  drilldown: FundingLineDrillDownData | null
 }
 
-export function FundingVsActual({ data, projectSelected }: Props) {
+export function FundingVsActual({ data, projectSelected, selectedSlug, expandedLineId, drilldown }: Props) {
   if (!projectSelected) {
     return (
       <EmptyState
@@ -46,11 +53,32 @@ export function FundingVsActual({ data, projectSelected }: Props) {
   const worksLines = lines.filter((l) => l.section === "works")
   const feeLines = lines.filter((l) => l.section === "professional_fees")
 
+  function lineHref(l: LineResult) {
+    const isExpanded = expandedLineId === l.lineId
+    const base = `/commercial?view=funding${selectedSlug ? `&project=${selectedSlug}` : ""}`
+    return isExpanded ? base : `${base}&line=${l.lineId}`
+  }
+
   const columns: Column<LineResult>[] = [
     {
       key: "description",
       header: "Description",
-      render: (l) => <span className="font-medium text-foreground">{l.description}</span>,
+      render: (l) => (
+        <Link
+          href={lineHref(l)}
+          className={cn(
+            "inline-flex items-center gap-1 font-medium text-foreground hover:text-primary hover:underline",
+            expandedLineId === l.lineId && "text-primary",
+          )}
+          aria-expanded={expandedLineId === l.lineId}
+        >
+          <ChevronRight
+            className={cn("h-3.5 w-3.5 shrink-0 transition-transform", expandedLineId === l.lineId && "rotate-90")}
+            aria-hidden
+          />
+          {l.description}
+        </Link>
+      ),
     },
     {
       key: "originalFundingBudget",
@@ -168,6 +196,12 @@ export function FundingVsActual({ data, projectSelected }: Props) {
           getRowKey={(l) => String(l.lineId)}
           caption="Works funding lines vs actual spend"
         />
+        {drilldown && drilldown.line.section === "works" ? (
+          <FundingLineDrillDown
+            data={drilldown}
+            closeHref={`/commercial?view=funding${selectedSlug ? `&project=${selectedSlug}` : ""}`}
+          />
+        ) : null}
       </section>
 
       <section className="flex flex-col gap-3">
@@ -183,6 +217,12 @@ export function FundingVsActual({ data, projectSelected }: Props) {
           getRowKey={(l) => String(l.lineId)}
           caption="Professional fee funding lines vs actual spend"
         />
+        {drilldown && drilldown.line.section === "professional_fees" ? (
+          <FundingLineDrillDown
+            data={drilldown}
+            closeHref={`/commercial?view=funding${selectedSlug ? `&project=${selectedSlug}` : ""}`}
+          />
+        ) : null}
       </section>
 
       <section

@@ -142,6 +142,15 @@ export type FundingCommercial = {
   unmappedSpend: number
   /** Live reconciliation of stored lines vs the header control totals. */
   recon: ReconResult
+  /**
+   * Raw funding-line ↔ cost-package edges for this budget. Exposed (not just
+   * consumed internally) so the UI can explain — by re-running the same
+   * `apportionSpend` engine function, never a separate calculation — exactly
+   * how a shared package's spend was split across the lines mapped to it.
+   */
+  mappings: MappingInput[]
+  /** Per-package actual spend (same figures apportioned above), for that explain view. */
+  packages: PackageSpendInput[]
 } | null
 
 /**
@@ -176,5 +185,5 @@ export async function getFundingCommercial(projectId: number): Promise<FundingCo
     originalTotal: budget.originalTotal,
   })
 
-  return { budget, lines: lineResults, project, unmappedSpend, recon }
+  return { budget, lines: lineResults, project, unmappedSpend, recon, mappings, packages }
 }

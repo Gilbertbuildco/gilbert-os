@@ -2,6 +2,7 @@ import Link from "next/link"
 import { PageHeader } from "@/components/page-header"
 import { CommercialView } from "@/components/commercial-view"
 import { FundingVsActual } from "@/components/funding-vs-actual"
+import { QuotesVsActualView } from "@/components/quotes-vs-actual"
 import type { FundingLineDrillDownData, PackageBreakdown, ApportionmentBasis } from "@/components/funding-line-drilldown"
 import { cn } from "@/lib/utils"
 import {
@@ -11,13 +12,14 @@ import {
   getLineItemsForProject,
   getCostPackageOptions,
   getLineItemsForCostPackages,
+  getQuotesVsActual,
 } from "@/lib/queries"
 import { getFundingCommercial } from "@/lib/funding/queries"
 import { apportionSpend, type FundingLineInput, type MappingInput } from "@/lib/funding/calculations"
 
 export const dynamic = "force-dynamic"
 
-type CommercialTab = "budget" | "funding"
+type CommercialTab = "budget" | "funding" | "quotes"
 
 /**
  * Same classification `apportionSpend`'s internal share logic uses (single
@@ -41,7 +43,7 @@ export default async function CommercialPage({
 }) {
   const { project, view, line } = await searchParams
   const projects = await getProjectOptions()
-  const tab: CommercialTab = view === "funding" ? "funding" : "budget"
+  const tab: CommercialTab = view === "funding" ? "funding" : view === "quotes" ? "quotes" : "budget"
 
   const selectedSlug = project ?? projects[0]?.slug ?? null
   const selected = selectedSlug ? await getProjectBySlug(selectedSlug) : null
@@ -54,6 +56,7 @@ export default async function CommercialPage({
     : [[], []]
 
   const funding = selected && tab === "funding" ? await getFundingCommercial(selected.id) : null
+  const quotesVsActual = selected && tab === "quotes" ? await getQuotesVsActual(selected.id) : null
 
   const expandedLineId = tab === "funding" && line != null && line.trim() !== "" ? Number(line) : null
   let drilldown: FundingLineDrillDownData | null = null
@@ -142,10 +145,47 @@ export default async function CommercialPage({
           >
             Funding vs Actual
           </Link>
+          <Link
+            href={`/commercial?view=quotes${selectedSlug ? `&project=${selectedSlug}` : ""}`}
+            role="tab"
+            aria-selected={tab === "quotes"}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              tab === "quotes"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Quotes
+          </Link>
         </div>
       </div>
 
-      {tab === "funding" ? (
+      {tab === "quotes" ? (
+        <main className="flex flex-col gap-6 px-8 py-8">
+          {projects.length > 1 ? (
+            <div role="tablist" aria-label="Project" className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1">
+              {projects.map((p) => (
+                <Link
+                  key={p.id}
+                  href={`/commercial?view=quotes&project=${p.slug}`}
+                  role="tab"
+                  aria-selected={p.slug === selectedSlug}
+                  className={cn(
+                    "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                    p.slug === selectedSlug
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {p.name}
+                </Link>
+              ))}
+            </div>
+          ) : null}
+          <QuotesVsActualView data={quotesVsActual} projectSelected={!!selected} />
+        </main>
+      ) : tab === "funding" ? (
         <main className="flex flex-col gap-6 px-8 py-8">
           {projects.length > 1 ? (
             <div role="tablist" aria-label="Project" className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1">

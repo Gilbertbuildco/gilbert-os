@@ -988,6 +988,7 @@ export type QuoteDrillDownRow = {
   gross: number | null
   status: string | null
   notes: string | null
+  sourceFilePathname: string | null
 }
 
 export type QuotesVsActual = {
@@ -1034,7 +1035,8 @@ export async function getQuotesVsActual(projectId: number): Promise<QuotesVsActu
 
   const quoteRows = await db.execute(sql`
     SELECT q.id, q.supplier_id, COALESCE(s.name, q.supplier_name_raw) AS supplier_name,
-      q.reference, q.quote_date, q.description, q.scope, q.net, q.vat, q.gross, q.status, q.notes
+      q.reference, q.quote_date, q.description, q.scope, q.net, q.vat, q.gross, q.status, q.notes,
+      q.source_file_pathname
     FROM quotes q
     LEFT JOIN suppliers s ON s.id = q.supplier_id
     WHERE q.project_id = ${projectId}
@@ -1064,6 +1066,7 @@ export async function getQuotesVsActual(projectId: number): Promise<QuotesVsActu
       gross: r.gross == null ? null : n(r.gross),
       status: r.status ?? null,
       notes: r.notes ?? null,
+      sourceFilePathname: r.source_file_pathname ?? null,
     })),
   }
 }

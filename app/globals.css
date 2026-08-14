@@ -103,3 +103,18 @@ body {
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
+
+/*
+ * Diagonal hatch fill — used to mark a segment of a value bar as "committed
+ * but unpaid" (quotes-vs-actual view) without introducing a new colour
+ * token. Picks up `currentColor`, so pair with a text-* utility.
+ */
+.bg-hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    currentColor 0,
+    currentColor 1.5px,
+    transparent 1.5px,
+    transparent 6px
+  );
+}

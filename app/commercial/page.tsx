@@ -140,14 +140,14 @@ export default async function CommercialPage({
         title="Commercial"
         description="Cost plan by package for each project. Set original budgets and watch committed spend roll up automatically from confirmed invoices."
       />
-      <div className="px-8 pt-6">
+      <div className="overflow-x-auto px-4 pt-6 sm:px-8">
         <div role="tablist" aria-label="Commercial view" className="inline-flex gap-1 rounded-lg border border-border bg-card p-1">
           <Link
             href={`/commercial${selectedSlug ? `?project=${selectedSlug}` : ""}`}
             role="tab"
             aria-selected={tab === "budget"}
             className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              "flex min-h-10 items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
               tab === "budget"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -160,7 +160,7 @@ export default async function CommercialPage({
             role="tab"
             aria-selected={tab === "funding"}
             className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              "flex min-h-10 items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
               tab === "funding"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -173,7 +173,7 @@ export default async function CommercialPage({
             role="tab"
             aria-selected={tab === "quotes"}
             className={cn(
-              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              "flex min-h-10 items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
               tab === "quotes"
                 ? "bg-primary text-primary-foreground"
                 : "text-muted-foreground hover:text-foreground",
@@ -185,7 +185,7 @@ export default async function CommercialPage({
       </div>
 
       {tab === "quotes" ? (
-        <main className="flex flex-col gap-6 px-8 py-8">
+        <main className="flex flex-col gap-6 px-4 py-8 sm:px-8">
           {projects.length > 1 ? (
             <div role="tablist" aria-label="Project" className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1">
               {projects.map((p) => (
@@ -209,7 +209,7 @@ export default async function CommercialPage({
           <QuotesVsActualView data={quotesVsActual} projectSelected={!!selected} />
         </main>
       ) : tab === "funding" ? (
-        <main className="flex flex-col gap-6 px-8 py-8">
+        <main className="flex flex-col gap-6 px-4 py-8 sm:px-8">
           {projects.length > 1 ? (
             <div role="tablist" aria-label="Project" className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1">
               {projects.map((p) => (

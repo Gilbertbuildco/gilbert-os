@@ -67,7 +67,7 @@ export function ProjectDetail({
         </Link>
       </PageHeader>
 
-      <main className="flex flex-col gap-8 px-8 py-8">
+      <main className="flex flex-col gap-8 px-4 py-8 sm:px-8">
         <div className="flex items-center gap-3">
           <StatusBadge variant={statusVariant(project.status)} dot>
             {project.status}
@@ -156,44 +156,46 @@ export function ProjectDetail({
           </div>
 
           <div className="overflow-hidden rounded-lg border border-border bg-card">
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="border-b border-border bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
-                  <th scope="col" className="px-4 py-2.5 text-left font-semibold">Package</th>
-                  <th scope="col" className="px-4 py-2.5 text-right font-semibold">Budget</th>
-                  <th scope="col" className="px-4 py-2.5 text-right font-semibold">Committed</th>
-                  <th scope="col" className="px-4 py-2.5 text-right font-semibold">Variance</th>
-                </tr>
-              </thead>
-              <tbody>
-                {packages.map((pkg) => {
-                  const variance = pkg.originalBudget != null ? pkg.originalBudget - pkg.committed : null
-                  return (
-                    <tr key={pkg.id} className="border-b border-border last:border-b-0">
-                      <td className="px-4 py-3">
-                        <span className="text-xs text-muted-foreground tabular-nums">{pkg.code}</span>{" "}
-                        <span className="font-medium text-foreground">{pkg.name}</span>
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
-                        {pkg.originalBudget != null ? formatGBP(pkg.originalBudget) : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-right font-medium tabular-nums text-foreground">
-                        {pkg.committed > 0 ? formatGBP(pkg.committed) : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {variance != null ? (
-                          <span className={variance < 0 ? "text-danger" : "text-success"}>
-                            {formatGBP(variance)}
-                          </span>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-border bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
+                    <th scope="col" className="px-4 py-2.5 text-left font-semibold">Package</th>
+                    <th scope="col" className="px-4 py-2.5 text-right font-semibold">Budget</th>
+                    <th scope="col" className="px-4 py-2.5 text-right font-semibold">Committed</th>
+                    <th scope="col" className="px-4 py-2.5 text-right font-semibold">Variance</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {packages.map((pkg) => {
+                    const variance = pkg.originalBudget != null ? pkg.originalBudget - pkg.committed : null
+                    return (
+                      <tr key={pkg.id} className="border-b border-border last:border-b-0">
+                        <td className="px-4 py-3">
+                          <span className="text-xs text-muted-foreground tabular-nums">{pkg.code}</span>{" "}
+                          <span className="font-medium text-foreground">{pkg.name}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+                          {pkg.originalBudget != null ? formatGBP(pkg.originalBudget) : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right font-medium tabular-nums text-foreground">
+                          {pkg.committed > 0 ? formatGBP(pkg.committed) : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right tabular-nums">
+                          {variance != null ? (
+                            <span className={variance < 0 ? "text-danger" : "text-success"}>
+                              {formatGBP(variance)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
 
@@ -230,34 +232,36 @@ export function ProjectDetail({
             />
           ) : (
             <div className="overflow-hidden rounded-lg border border-border bg-card">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
-                    <th scope="col" className="px-4 py-2.5 text-left font-semibold">Date</th>
-                    <th scope="col" className="px-4 py-2.5 text-left font-semibold">Supplier</th>
-                    <th scope="col" className="px-4 py-2.5 text-left font-semibold">Invoice No.</th>
-                    <th scope="col" className="px-4 py-2.5 text-right font-semibold">Net</th>
-                    <th scope="col" className="px-4 py-2.5 text-right font-semibold">Gross</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoices.map((inv) => (
-                    <tr key={inv.id} className="border-b border-border last:border-b-0">
-                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
-                        {formatDate(inv.invoiceDate)}
-                      </td>
-                      <td className="px-4 py-3 font-medium text-foreground">{inv.supplierName}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{inv.invoiceNumber ?? "—"}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatGBP(inv.net, { decimals: true })}
-                      </td>
-                      <td className="px-4 py-3 text-right font-semibold tabular-nums">
-                        {formatGBP(inv.gross, { decimals: true })}
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
+                      <th scope="col" className="px-4 py-2.5 text-left font-semibold">Date</th>
+                      <th scope="col" className="px-4 py-2.5 text-left font-semibold">Supplier</th>
+                      <th scope="col" className="px-4 py-2.5 text-left font-semibold">Invoice No.</th>
+                      <th scope="col" className="px-4 py-2.5 text-right font-semibold">Net</th>
+                      <th scope="col" className="px-4 py-2.5 text-right font-semibold">Gross</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {invoices.map((inv) => (
+                      <tr key={inv.id} className="border-b border-border last:border-b-0">
+                        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                          {formatDate(inv.invoiceDate)}
+                        </td>
+                        <td className="px-4 py-3 font-medium text-foreground">{inv.supplierName}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{inv.invoiceNumber ?? "—"}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">
+                          {formatGBP(inv.net, { decimals: true })}
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold tabular-nums">
+                          {formatGBP(inv.gross, { decimals: true })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </section>

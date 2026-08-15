@@ -12,7 +12,7 @@ interface Props {
 }
 
 const selectCls =
-  "h-9 rounded-md border border-border bg-card px-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30"
+  "h-11 w-full rounded-md border border-border bg-card px-2 text-sm text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30 sm:h-9 sm:w-auto"
 
 export function InvoiceFilterBar({ supplierOptions, projectOptions }: Props) {
   const router = useRouter()
@@ -72,7 +72,7 @@ export function InvoiceFilterBar({ supplierOptions, projectOptions }: Props) {
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search invoice no., supplier or line item"
           aria-label="Search invoices"
-          className="h-9 w-full rounded-md border border-border bg-card pl-9 pr-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30"
+          className="h-11 w-full rounded-md border border-border bg-card pl-9 pr-3 text-base text-foreground placeholder:text-muted-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30 sm:h-9 sm:text-sm"
         />
       </div>
 
@@ -104,21 +104,21 @@ export function InvoiceFilterBar({ supplierOptions, projectOptions }: Props) {
         ))}
       </select>
 
-      <div className="flex items-center gap-1.5">
+      <div className="flex w-full flex-wrap items-center gap-1.5 sm:w-auto sm:flex-nowrap">
         <input
           type="date"
           value={searchParams.get("from") ?? ""}
           onChange={(e) => updateParams({ from: e.target.value || null })}
           aria-label="From date"
-          className={selectCls}
+          className={cn(selectCls, "flex-1 sm:flex-none")}
         />
-        <span className="text-xs text-muted-foreground">to</span>
+        <span className="shrink-0 text-xs text-muted-foreground">to</span>
         <input
           type="date"
           value={searchParams.get("to") ?? ""}
           onChange={(e) => updateParams({ to: e.target.value || null })}
           aria-label="To date"
-          className={selectCls}
+          className={cn(selectCls, "flex-1 sm:flex-none")}
         />
       </div>
 

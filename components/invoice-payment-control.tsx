@@ -52,7 +52,7 @@ export function InvoicePaymentControl({ invoiceId, paymentStatus, paidDate }: Pr
         disabled={isPending}
         aria-haspopup="menu"
         aria-expanded={open}
-        className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-left transition-opacity hover:opacity-80 disabled:opacity-60"
+        className="inline-flex min-h-9 items-center gap-1 rounded-md px-1 py-0.5 text-left transition-opacity hover:opacity-80 disabled:opacity-60 max-sm:min-h-10"
       >
         <PaymentStatusBadge status={paymentStatus} paidDate={paidDate} />
         {isPending ? (
@@ -70,13 +70,13 @@ export function InvoicePaymentControl({ invoiceId, paymentStatus, paidDate }: Pr
               value={date}
               onChange={(e) => setDate(e.target.value)}
               aria-label="Paid date"
-              className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-1.5 text-xs text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30"
+              className="h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-1.5 text-xs text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30"
             />
             <button
               type="button"
               role="menuitem"
               onClick={() => apply("paid", date || todayIso())}
-              className="h-8 shrink-0 rounded-md border border-success/40 bg-success-bg px-2.5 text-xs font-semibold text-success hover:opacity-90"
+              className="h-9 shrink-0 rounded-md border border-success/40 bg-success-bg px-2.5 text-xs font-semibold text-success hover:opacity-90"
             >
               Mark paid
             </button>
@@ -86,7 +86,7 @@ export function InvoicePaymentControl({ invoiceId, paymentStatus, paidDate }: Pr
               type="button"
               role="menuitem"
               onClick={() => apply("part_paid", null)}
-              className="rounded-md px-2 py-1.5 text-left text-xs font-medium text-foreground hover:bg-muted"
+              className="min-h-9 rounded-md px-2 py-1.5 text-left text-xs font-medium text-foreground hover:bg-muted"
             >
               Mark part paid
             </button>
@@ -94,7 +94,7 @@ export function InvoicePaymentControl({ invoiceId, paymentStatus, paidDate }: Pr
               type="button"
               role="menuitem"
               onClick={() => apply("unpaid", null)}
-              className="rounded-md px-2 py-1.5 text-left text-xs font-medium text-foreground hover:bg-muted"
+              className="min-h-9 rounded-md px-2 py-1.5 text-left text-xs font-medium text-foreground hover:bg-muted"
             >
               Mark unpaid
             </button>
@@ -102,7 +102,7 @@ export function InvoicePaymentControl({ invoiceId, paymentStatus, paidDate }: Pr
               type="button"
               role="menuitem"
               onClick={() => apply(null, null)}
-              className="rounded-md px-2 py-1.5 text-left text-xs font-medium text-muted-foreground hover:bg-muted"
+              className="min-h-9 rounded-md px-2 py-1.5 text-left text-xs font-medium text-muted-foreground hover:bg-muted"
             >
               Clear (not recorded)
             </button>

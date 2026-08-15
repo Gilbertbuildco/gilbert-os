@@ -10,7 +10,7 @@ interface PageHeaderProps {
 export function PageHeader({ title, description, actions, children }: PageHeaderProps) {
   return (
     <header className="border-b border-border bg-card">
-      <div className="flex flex-col gap-4 px-8 py-6 lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex flex-col gap-4 px-4 py-6 sm:px-8 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex flex-col gap-1">
           <h1 className="text-pretty text-2xl font-semibold tracking-tight text-foreground">
             {title}
@@ -21,7 +21,7 @@ export function PageHeader({ title, description, actions, children }: PageHeader
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
       </div>
-      {children ? <div className="px-8 pb-5">{children}</div> : null}
+      {children ? <div className="px-4 pb-5 sm:px-8">{children}</div> : null}
     </header>
   )
 }

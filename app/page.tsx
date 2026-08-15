@@ -94,7 +94,7 @@ export default async function DashboardPage() {
         }
       />
 
-      <main className="flex flex-col gap-8 px-8 py-8">
+      <main className="flex flex-col gap-8 px-4 py-8 sm:px-8">
         {/* Primary KPIs */}
         <section aria-labelledby="kpi-heading">
           <h2 id="kpi-heading" className="sr-only">
@@ -276,30 +276,32 @@ export default async function DashboardPage() {
                 to get started.
               </div>
             ) : (
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="border-b border-border bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
-                    <th scope="col" className="px-4 py-2.5 text-left font-semibold">Date</th>
-                    <th scope="col" className="px-4 py-2.5 text-left font-semibold">Supplier</th>
-                    <th scope="col" className="px-4 py-2.5 text-left font-semibold">Project</th>
-                    <th scope="col" className="px-4 py-2.5 text-right font-semibold">Net</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoices.slice(0, 6).map((inv) => (
-                    <tr key={inv.id} className="border-b border-border last:border-b-0">
-                      <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
-                        {formatDate(inv.invoiceDate)}
-                      </td>
-                      <td className="px-4 py-3 font-medium text-foreground">{inv.supplierName}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{inv.projectName ?? "Unassigned"}</td>
-                      <td className="px-4 py-3 text-right tabular-nums">
-                        {formatGBP(inv.net, { decimals: true })}
-                      </td>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                  <thead>
+                    <tr className="border-b border-border bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
+                      <th scope="col" className="px-4 py-2.5 text-left font-semibold">Date</th>
+                      <th scope="col" className="px-4 py-2.5 text-left font-semibold">Supplier</th>
+                      <th scope="col" className="px-4 py-2.5 text-left font-semibold">Project</th>
+                      <th scope="col" className="px-4 py-2.5 text-right font-semibold">Net</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {invoices.slice(0, 6).map((inv) => (
+                      <tr key={inv.id} className="border-b border-border last:border-b-0">
+                        <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
+                          {formatDate(inv.invoiceDate)}
+                        </td>
+                        <td className="px-4 py-3 font-medium text-foreground">{inv.supplierName}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{inv.projectName ?? "Unassigned"}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">
+                          {formatGBP(inv.net, { decimals: true })}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </section>

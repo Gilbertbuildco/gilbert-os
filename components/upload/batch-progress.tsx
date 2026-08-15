@@ -105,7 +105,7 @@ export function BatchProgress({
           : null
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-5 px-8 py-10">
+    <div className="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-10 sm:px-8">
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
           {done && !retrying ? (

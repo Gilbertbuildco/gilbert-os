@@ -22,7 +22,7 @@ export default async function SuppliersPage() {
         title="Suppliers"
         description="Merchant relationships built automatically from ingested invoices. Spend, product coverage and last activity update as invoices are captured."
       />
-      <main className="px-8 py-8">
+      <main className="px-4 py-8 sm:px-8">
         {suppliers.length === 0 ? (
           <EmptyState
             icon={<Building2 className="h-5 w-5" strokeWidth={1.75} />}

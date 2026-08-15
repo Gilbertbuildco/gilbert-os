@@ -920,7 +920,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
 
   if (step === "upload") {
     return (
-      <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-10">
+      <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-10 sm:px-8">
         <UploadDropzone onFiles={handleFiles} />
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-5">
@@ -951,7 +951,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
 
   if (step === "reading") {
     return (
-      <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-10">
+      <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-10 sm:px-8">
         <BatchProgress
           files={fileProgress}
           processed={processedCount}
@@ -969,7 +969,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
 
   if (step === "summary") {
     return (
-      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-8 py-8">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-8">
         <BatchSummary
           data={buildSummaryData(outcomes, fileProgress)}
           onDone={() => {
@@ -1022,7 +1022,7 @@ export function InvoiceUploader({ projects, suppliers }: Props) {
   }
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-6 px-8 py-8">
+    <div className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-8 sm:px-8">
       {error ? (
         <div className="rounded-lg border border-danger/30 bg-danger-bg px-4 py-3 text-sm text-danger">
           {error}

@@ -128,7 +128,7 @@ export default async function InvoicesPage({
           </Link>
         }
       />
-      <main className="flex flex-col gap-5 px-8 py-8">
+      <main className="flex flex-col gap-5 px-4 py-8 sm:px-8">
         <Suspense fallback={<SummarySkeleton />}>
           <SummarySection sp={sp} filters={filters} baseFilters={baseFilters} />
         </Suspense>
@@ -330,14 +330,17 @@ async function TableSection({
   }
 
   const totalPages = Math.max(1, Math.ceil(summary.count / PAGE_SIZE))
-  const columns: { key: InvoiceSort | null; label: string; align?: "right" }[] = [
+  // VAT is genuinely secondary on a phone — Net and Gross stay visible, VAT
+  // reappears from sm upward. The table still scrolls horizontally below sm
+  // if anything else doesn't fit; this just declutters the common case.
+  const columns: { key: InvoiceSort | null; label: string; align?: "right"; hideOnMobile?: boolean }[] = [
     { key: "date", label: "Date" },
     { key: "supplier", label: "Supplier" },
     { key: "number", label: "Invoice No." },
     { key: null, label: "Project" },
     { key: null, label: "Lines", align: "right" },
     { key: "net", label: "Net", align: "right" },
-    { key: null, label: "VAT", align: "right" },
+    { key: null, label: "VAT", align: "right", hideOnMobile: true },
     { key: "gross", label: "Gross", align: "right" },
     { key: null, label: "Status" },
     { key: null, label: "Payment" },
@@ -363,6 +366,7 @@ async function TableSection({
                     className={cn(
                       "whitespace-nowrap px-4 py-2.5 font-semibold",
                       col.align === "right" ? "text-right" : "text-left",
+                      col.hideOnMobile && "hidden sm:table-cell",
                     )}
                   >
                     {col.key ? (

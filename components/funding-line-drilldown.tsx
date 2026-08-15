@@ -191,48 +191,50 @@ export function FundingLineDrillDown({ data, closeHref }: Props) {
         <div className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold text-foreground">Drawdown history</h3>
           <div className="overflow-hidden rounded-md border border-border">
-            <table className="w-full border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <th scope="col" className="px-3 py-2 text-left font-semibold">
-                    Event
-                  </th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold">
-                    Date
-                  </th>
-                  <th scope="col" className="px-3 py-2 text-left font-semibold">
-                    Type
-                  </th>
-                  <th scope="col" className="px-3 py-2 text-right font-semibold">
-                    Amount
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {drawdownHistory.map((h) => (
-                  <tr key={h.eventId} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2 text-foreground">{h.eventLabel}</td>
-                    <td className="px-3 py-2 text-muted-foreground">
-                      {formatDate(h.eventDate ?? h.receivedDate) ?? "—"}
-                    </td>
-                    <td className="px-3 py-2">
-                      {h.directPayment ? (
-                        <StatusBadge variant="info">Direct payment</StatusBadge>
-                      ) : h.cashReceived != null ? (
-                        <StatusBadge variant="success" dot>
-                          Received to bank
-                        </StatusBadge>
-                      ) : (
-                        <StatusBadge variant="neutral">Certified — not yet matched</StatusBadge>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-foreground">
-                      {formatGBP(h.amount, { decimals: true })}
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th scope="col" className="px-3 py-2 text-left font-semibold">
+                      Event
+                    </th>
+                    <th scope="col" className="px-3 py-2 text-left font-semibold">
+                      Date
+                    </th>
+                    <th scope="col" className="px-3 py-2 text-left font-semibold">
+                      Type
+                    </th>
+                    <th scope="col" className="px-3 py-2 text-right font-semibold">
+                      Amount
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {drawdownHistory.map((h) => (
+                    <tr key={h.eventId} className="border-b border-border last:border-b-0">
+                      <td className="px-3 py-2 text-foreground">{h.eventLabel}</td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {formatDate(h.eventDate ?? h.receivedDate) ?? "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        {h.directPayment ? (
+                          <StatusBadge variant="info">Direct payment</StatusBadge>
+                        ) : h.cashReceived != null ? (
+                          <StatusBadge variant="success" dot>
+                            Received to bank
+                          </StatusBadge>
+                        ) : (
+                          <StatusBadge variant="neutral">Certified — not yet matched</StatusBadge>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                        {formatGBP(h.amount, { decimals: true })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       ) : null}
@@ -275,45 +277,47 @@ export function FundingLineDrillDown({ data, closeHref }: Props) {
                       This package's spend is a proportional share here, not a direct attribution — see the split below.
                     </p>
                     <div className="overflow-hidden rounded-md border border-border">
-                      <table className="w-full border-collapse text-xs">
-                        <thead>
-                          <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
-                            <th scope="col" className="px-3 py-2 text-left font-semibold">Funding line</th>
-                            <th scope="col" className="px-3 py-2 text-right font-semibold">Share</th>
-                            <th scope="col" className="px-3 py-2 text-right font-semibold">Amount</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {pkg.shares.map((s) => (
-                            <tr
-                              key={s.lineId}
-                              className={cn("border-b border-border last:border-b-0", s.isTargetLine && "bg-primary/5")}
-                            >
-                              <td className="px-3 py-2 text-foreground">
-                                {s.description}
-                                {s.isTargetLine ? (
-                                  <span className="ml-2 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
-                                    This line
-                                  </span>
-                                ) : null}
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                                {s.pct != null ? `${s.pct.toFixed(1)}%` : "—"}
-                              </td>
-                              <td className="px-3 py-2 text-right tabular-nums text-foreground">
-                                {formatGBP(s.amount, { decimals: true })}
+                      <div className="overflow-x-auto">
+                        <table className="w-full border-collapse text-xs">
+                          <thead>
+                            <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
+                              <th scope="col" className="px-3 py-2 text-left font-semibold">Funding line</th>
+                              <th scope="col" className="px-3 py-2 text-right font-semibold">Share</th>
+                              <th scope="col" className="px-3 py-2 text-right font-semibold">Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pkg.shares.map((s) => (
+                              <tr
+                                key={s.lineId}
+                                className={cn("border-b border-border last:border-b-0", s.isTargetLine && "bg-primary/5")}
+                              >
+                                <td className="px-3 py-2 text-foreground">
+                                  {s.description}
+                                  {s.isTargetLine ? (
+                                    <span className="ml-2 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                                      This line
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                                  {s.pct != null ? `${s.pct.toFixed(1)}%` : "—"}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                                  {formatGBP(s.amount, { decimals: true })}
+                                </td>
+                              </tr>
+                            ))}
+                            <tr className="bg-muted/40">
+                              <td className="px-3 py-2 font-medium text-foreground">Package spend total</td>
+                              <td className="px-3 py-2 text-right text-muted-foreground">100%</td>
+                              <td className="px-3 py-2 text-right font-semibold tabular-nums text-foreground">
+                                {formatGBP(pkg.totalSpend, { decimals: true })}
                               </td>
                             </tr>
-                          ))}
-                          <tr className="bg-muted/40">
-                            <td className="px-3 py-2 font-medium text-foreground">Package spend total</td>
-                            <td className="px-3 py-2 text-right text-muted-foreground">100%</td>
-                            <td className="px-3 py-2 text-right font-semibold tabular-nums text-foreground">
-                              {formatGBP(pkg.totalSpend, { decimals: true })}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
                 ) : null}

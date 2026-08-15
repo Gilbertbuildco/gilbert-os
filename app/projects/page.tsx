@@ -34,7 +34,7 @@ export default async function ProjectsPage() {
           </Link>
         }
       />
-      <main className="px-8 py-8">
+      <main className="px-4 py-8 sm:px-8">
         {projects.length === 0 ? (
           <EmptyState
             title="No projects yet"

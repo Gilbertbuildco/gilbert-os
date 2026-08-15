@@ -182,30 +182,32 @@ function DrawdownEventRow({
 
         {event.allocations.length > 0 ? (
           <div className="overflow-hidden rounded-md border border-border">
-            <table className="w-full border-collapse text-xs">
-              <thead>
-                <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <th scope="col" className="px-3 py-2 text-left font-semibold">
-                    Funding line
-                  </th>
-                  <th scope="col" className="px-3 py-2 text-right font-semibold">
-                    Amount
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {event.allocations.map((a) => (
-                  <tr key={a.id} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2 text-foreground">
-                      {lineDescById.get(a.fundingBudgetLineId) ?? `Funding line ${a.fundingBudgetLineId}`}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-foreground">
-                      {formatGBP(a.amount, { decimals: true })}
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
+                    <th scope="col" className="px-3 py-2 text-left font-semibold">
+                      Funding line
+                    </th>
+                    <th scope="col" className="px-3 py-2 text-right font-semibold">
+                      Amount
+                    </th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {event.allocations.map((a) => (
+                    <tr key={a.id} className="border-b border-border last:border-b-0">
+                      <td className="px-3 py-2 text-foreground">
+                        {lineDescById.get(a.fundingBudgetLineId) ?? `Funding line ${a.fundingBudgetLineId}`}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                        {formatGBP(a.amount, { decimals: true })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
           <p className="flex items-center gap-1.5 text-xs text-warning">

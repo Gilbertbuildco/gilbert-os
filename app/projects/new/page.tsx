@@ -10,7 +10,7 @@ export default function NewProjectPage() {
         title="New Project"
         description="Create a development. Standard cost packages are added automatically so you can start assigning spend immediately."
       />
-      <div className="px-8 py-6">
+      <div className="px-4 py-6 sm:px-8">
         <div className="mx-auto max-w-2xl">
           <CreateProjectForm />
         </div>

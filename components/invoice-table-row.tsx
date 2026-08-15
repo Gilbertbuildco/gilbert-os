@@ -87,7 +87,7 @@ export function InvoiceTableRow({ inv, columnCount, projectId }: Props) {
               onClick={toggle}
               aria-expanded={expanded}
               aria-label={expanded ? "Collapse line items" : "Expand line items"}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground max-sm:h-10 max-sm:w-10"
             >
               {expanded ? (
                 <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
@@ -110,7 +110,7 @@ export function InvoiceTableRow({ inv, columnCount, projectId }: Props) {
           ) : null}
         </td>
         <td className="px-4 py-3 text-right tabular-nums">{formatGBP(inv.net, { decimals: true })}</td>
-        <td className="px-4 py-3 text-right tabular-nums text-muted-foreground">
+        <td className="hidden px-4 py-3 text-right tabular-nums text-muted-foreground sm:table-cell">
           {formatGBP(inv.vat, { decimals: true })}
         </td>
         <td className="px-4 py-3 text-right font-semibold tabular-nums">{formatGBP(inv.gross, { decimals: true })}</td>
@@ -189,52 +189,54 @@ function LineItemsTable({
 
   return (
     <div className="overflow-hidden rounded-md border border-border bg-card">
-      <table className="w-full border-collapse text-xs">
-        <thead>
-          <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
-            <th scope="col" className="px-3 py-2 text-left font-semibold">Description</th>
-            <th scope="col" className="px-3 py-2 text-right font-semibold">Qty</th>
-            <th scope="col" className="px-3 py-2 text-left font-semibold">Unit</th>
-            <th scope="col" className="px-3 py-2 text-right font-semibold">Unit price</th>
-            <th scope="col" className="px-3 py-2 text-right font-semibold">Net</th>
-            <th scope="col" className="px-3 py-2 text-right font-semibold">VAT</th>
-            <th scope="col" className="px-3 py-2 text-right font-semibold">Gross</th>
-            <th scope="col" className="px-3 py-2 text-left font-semibold">Cost package</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((li) => (
-            <tr key={li.id} className="border-b border-border last:border-b-0">
-              <td className="px-3 py-2 text-foreground">{li.description}</td>
-              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                {li.quantity ?? "—"}
-              </td>
-              <td className="px-3 py-2 text-muted-foreground">{li.unit ?? "—"}</td>
-              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                {li.unitPriceExVat != null ? formatGBP(li.unitPriceExVat, { decimals: true }) : "—"}
-              </td>
-              <td className="px-3 py-2 text-right tabular-nums text-foreground">
-                {formatGBP(li.lineNet, { decimals: true })}
-              </td>
-              <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                {formatGBP(li.lineVat, { decimals: true })}
-              </td>
-              <td className="px-3 py-2 text-right font-medium tabular-nums text-foreground">
-                {formatGBP(li.lineGross, { decimals: true })}
-              </td>
-              <td className="px-3 py-2 align-top">
-                <ClassificationCell
-                  line={li}
-                  options={costPackageOptions}
-                  suggestion={suggestionByLineId.get(li.id)}
-                  projectId={projectId}
-                  onChanged={onChanged}
-                />
-              </td>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
+              <th scope="col" className="px-3 py-2 text-left font-semibold">Description</th>
+              <th scope="col" className="px-3 py-2 text-right font-semibold">Qty</th>
+              <th scope="col" className="px-3 py-2 text-left font-semibold">Unit</th>
+              <th scope="col" className="px-3 py-2 text-right font-semibold">Unit price</th>
+              <th scope="col" className="px-3 py-2 text-right font-semibold">Net</th>
+              <th scope="col" className="hidden px-3 py-2 text-right font-semibold sm:table-cell">VAT</th>
+              <th scope="col" className="px-3 py-2 text-right font-semibold">Gross</th>
+              <th scope="col" className="px-3 py-2 text-left font-semibold">Cost package</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {items.map((li) => (
+              <tr key={li.id} className="border-b border-border last:border-b-0">
+                <td className="px-3 py-2 text-foreground">{li.description}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {li.quantity ?? "—"}
+                </td>
+                <td className="px-3 py-2 text-muted-foreground">{li.unit ?? "—"}</td>
+                <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                  {li.unitPriceExVat != null ? formatGBP(li.unitPriceExVat, { decimals: true }) : "—"}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-foreground">
+                  {formatGBP(li.lineNet, { decimals: true })}
+                </td>
+                <td className="hidden px-3 py-2 text-right tabular-nums text-muted-foreground sm:table-cell">
+                  {formatGBP(li.lineVat, { decimals: true })}
+                </td>
+                <td className="px-3 py-2 text-right font-medium tabular-nums text-foreground">
+                  {formatGBP(li.lineGross, { decimals: true })}
+                </td>
+                <td className="px-3 py-2 align-top">
+                  <ClassificationCell
+                    line={li}
+                    options={costPackageOptions}
+                    suggestion={suggestionByLineId.get(li.id)}
+                    projectId={projectId}
+                    onChanged={onChanged}
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -342,7 +344,7 @@ function ClassificationCell({
                   setEditing(true)
                 }}
                 aria-label="Change cost package"
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                className="flex items-center justify-center rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground max-sm:h-8 max-sm:w-8"
               >
                 <Pencil className="h-3 w-3" strokeWidth={1.75} />
               </button>
@@ -350,7 +352,7 @@ function ClassificationCell({
                 type="button"
                 onClick={clear}
                 aria-label="Clear cost package"
-                className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-danger"
+                className="flex items-center justify-center rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-danger max-sm:h-8 max-sm:w-8"
               >
                 <X className="h-3 w-3" strokeWidth={1.75} />
               </button>
@@ -387,7 +389,7 @@ function ClassificationCell({
             if (value) classify(Number(value))
           }}
           aria-label="Cost package"
-          className="h-7 min-w-0 max-w-[220px] rounded-md border border-border bg-background px-1.5 text-[11px] text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30 disabled:opacity-60"
+          className="h-9 min-w-0 max-w-[220px] rounded-md border border-border bg-background px-1.5 text-[11px] text-foreground focus:border-ring focus:outline-none focus:ring-2 focus:ring-ring/30 disabled:opacity-60 max-sm:h-10"
         >
           <option value="" disabled>
             Select a cost package…

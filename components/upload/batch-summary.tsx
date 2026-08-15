@@ -26,7 +26,7 @@ interface Props {
 export function BatchSummary({ data, onDone, onUploadMore }: Props) {
   const added = data.invoicesAdded + data.creditsAdded
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-10">
+    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-10 sm:px-8">
       <div className="flex items-center gap-3">
         <div className="flex h-11 w-11 items-center justify-center rounded-full bg-success-bg text-success">
           <CheckCircle2 className="h-6 w-6" strokeWidth={2} />

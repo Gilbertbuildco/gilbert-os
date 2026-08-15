@@ -38,7 +38,7 @@ export function CommercialView({ projects, selectedSlug, packages, lineItems }: 
   const unassigned = lineItems.filter((li) => li.costPackageId == null)
 
   return (
-    <main className="flex flex-col gap-6 px-8 py-8">
+    <main className="flex flex-col gap-6 px-4 py-8 sm:px-8">
       {projects.length > 1 ? (
         <div role="tablist" aria-label="Project" className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1">
           {projects.map((p) => (
@@ -214,7 +214,7 @@ function PackageRow({
               disabled={!canExpand}
               aria-expanded={expanded}
               aria-label={expanded ? `Collapse ${pkg.name} line items` : `Expand ${pkg.name} line items`}
-              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent max-sm:h-10 max-sm:w-10"
             >
               {expanded ? (
                 <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
@@ -328,22 +328,24 @@ function PackageLineItems({ items }: { items: LineItemRow[] }) {
 
   return (
     <div className="overflow-hidden rounded-md border border-border bg-card">
-      <table className="w-full border-collapse text-xs">
-        <thead>
-          <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
-            <th scope="col" className="px-3 py-2 text-left font-semibold">Description</th>
-            <th scope="col" className="px-3 py-2 text-right font-semibold">Qty</th>
-            <th scope="col" className="px-3 py-2 text-left font-semibold">Unit</th>
-            <th scope="col" className="px-3 py-2 text-left font-semibold">Supplier / invoice</th>
-            <th scope="col" className="px-3 py-2 text-right font-semibold">Net</th>
-          </tr>
-        </thead>
-        <tbody>
-          {grouped.map((group) => (
-            <GroupedLineItemRow key={group.description} group={group} />
-          ))}
-        </tbody>
-      </table>
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="border-b border-border bg-muted text-[11px] uppercase tracking-wide text-muted-foreground">
+              <th scope="col" className="px-3 py-2 text-left font-semibold">Description</th>
+              <th scope="col" className="px-3 py-2 text-right font-semibold">Qty</th>
+              <th scope="col" className="px-3 py-2 text-left font-semibold">Unit</th>
+              <th scope="col" className="px-3 py-2 text-left font-semibold">Supplier / invoice</th>
+              <th scope="col" className="px-3 py-2 text-right font-semibold">Net</th>
+            </tr>
+          </thead>
+          <tbody>
+            {grouped.map((group) => (
+              <GroupedLineItemRow key={group.description} group={group} />
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -381,7 +383,7 @@ function GroupedLineItemRow({ group }: { group: GroupedLineItem }) {
               onClick={() => setExpanded((e) => !e)}
               aria-expanded={expanded}
               aria-label={expanded ? "Collapse breakdown" : "Expand breakdown"}
-              className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground max-sm:h-9 max-sm:w-9"
             >
               {expanded ? (
                 <ChevronDown className="h-3 w-3" strokeWidth={1.75} />

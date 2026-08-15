@@ -61,7 +61,7 @@ export function CreateProjectForm() {
   }
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-5 px-8 py-8">
+    <div className="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-8 sm:px-8">
       {error ? (
         <div className="rounded-lg border border-danger/30 bg-danger-bg px-4 py-3 text-sm text-danger">
           {error}

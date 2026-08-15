@@ -8,7 +8,7 @@ export default function LandAppraisalPage() {
         title="Land Appraisal"
         description="Model development viability from land price through to residual land value. Pre-populated with the Phase 2 assumptions."
       />
-      <main className="px-8 py-8">
+      <main className="px-4 py-8 sm:px-8">
         <AppraisalCalculator />
       </main>
     </>

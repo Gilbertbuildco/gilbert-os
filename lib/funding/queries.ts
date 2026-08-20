@@ -173,14 +173,23 @@ export async function getDrawdownEvents(budgetId: number): Promise<DrawdownEvent
   }))
 }
 
-/** Net actual spend per cost package for a project (credits already negative). */
+/**
+ * Net actual spend per cost package for a project (credits already negative).
+ * Only BUILD-cost packages (cost_packages.is_build_cost = true) are returned —
+ * this feeds `apportionSpend`, which apportions package spend onto the
+ * lender's Goldentree funding lines, so a package that is real project cost
+ * but not construction cost (e.g. "Legal & broker fees") must never enter
+ * that apportionment. Excluding it here is a data/query decision only; the
+ * pure engine in lib/funding/calculations.ts is never touched.
+ */
 export async function getPackageSpend(projectId: number): Promise<PackageSpendInput[]> {
   const rows = await db.execute(sql`
     SELECT li.cost_package_id, SUM(li.line_net) AS spend
     FROM invoice_line_items li
     JOIN invoices inv ON inv.id = li.invoice_id
+    JOIN cost_packages cp ON cp.id = li.cost_package_id
     WHERE inv.project_id = ${projectId} AND inv.status = 'confirmed'
-      AND li.cost_package_id IS NOT NULL
+      AND li.cost_package_id IS NOT NULL AND cp.is_build_cost = true
     GROUP BY li.cost_package_id
   `)
   return (rows.rows as any[]).map((r) => ({
@@ -189,11 +198,43 @@ export async function getPackageSpend(projectId: number): Promise<PackageSpendIn
   }))
 }
 
-/** Authoritative project actual spend (every confirmed invoice net). */
+/**
+ * Authoritative project actual spend — every confirmed invoice net, MINUS
+ * line items classified into a non-build-cost package (is_build_cost =
+ * false). This feeds `totalActualSpendAll` in `computeProject`, which drives
+ * `favourableFundingVariance` (actual spend vs the lender's funding budget):
+ * a legal/broker fee is not funded by the lender as build cost, so it must
+ * never count against that budget. Excluded spend is never lost — it is
+ * exposed separately by `getProjectNonBuildCostSpend`.
+ */
 export async function getProjectActualSpend(projectId: number): Promise<number> {
   const rows = await db.execute(sql`
-    SELECT COALESCE(SUM(net), 0) AS spend FROM invoices
-    WHERE project_id = ${projectId} AND status = 'confirmed'
+    SELECT
+      COALESCE((SELECT SUM(net) FROM invoices WHERE project_id = ${projectId} AND status = 'confirmed'), 0)
+      - COALESCE((
+          SELECT SUM(li.line_net)
+          FROM invoice_line_items li
+          JOIN invoices inv ON inv.id = li.invoice_id
+          JOIN cost_packages cp ON cp.id = li.cost_package_id
+          WHERE inv.project_id = ${projectId} AND inv.status = 'confirmed' AND cp.is_build_cost = false
+        ), 0) AS spend
+  `)
+  return n((rows.rows as any[])[0]?.spend)
+}
+
+/**
+ * Confirmed-invoice spend on this project's non-build-cost packages — the
+ * portion `getProjectActualSpend` deliberately excludes from the lender
+ * actual-spend figure. Surfaced separately so the UI can show it as its own
+ * line rather than silently dropping it (non-negotiable: flag, never hide).
+ */
+export async function getProjectNonBuildCostSpend(projectId: number): Promise<number> {
+  const rows = await db.execute(sql`
+    SELECT COALESCE(SUM(li.line_net), 0) AS spend
+    FROM invoice_line_items li
+    JOIN invoices inv ON inv.id = li.invoice_id
+    JOIN cost_packages cp ON cp.id = li.cost_package_id
+    WHERE inv.project_id = ${projectId} AND inv.status = 'confirmed' AND cp.is_build_cost = false
   `)
   return n((rows.rows as any[])[0]?.spend)
 }
@@ -214,6 +255,12 @@ export type FundingCommercial = {
   mappings: MappingInput[]
   /** Per-package actual spend (same figures apportioned above), for that explain view. */
   packages: PackageSpendInput[]
+  /**
+   * Confirmed-invoice spend on non-build-cost packages (e.g. "Legal & broker
+   * fees") — excluded from `project.totalActualSpendAll` and from every
+   * `packages` entry above, but never hidden: shown here as its own figure.
+   */
+  nonBuildCostSpend: number
 } | null
 
 /**
@@ -224,12 +271,13 @@ export async function getFundingCommercial(projectId: number): Promise<FundingCo
   const budget = await getOriginalFundingBudget(projectId)
   if (!budget) return null
 
-  const [lines, mappings, drawdowns, packages, totalActualSpendAll] = await Promise.all([
+  const [lines, mappings, drawdowns, packages, totalActualSpendAll, nonBuildCostSpend] = await Promise.all([
     getFundingLines(budget.id),
     getMappings(budget.id),
     getDrawdowns(budget.id),
     getPackageSpend(projectId),
     getProjectActualSpend(projectId),
+    getProjectNonBuildCostSpend(projectId),
   ])
 
   const lineInputs: FundingLineInput[] = lines.map((l) => ({
@@ -248,5 +296,5 @@ export async function getFundingCommercial(projectId: number): Promise<FundingCo
     originalTotal: budget.originalTotal,
   })
 
-  return { budget, lines: lineResults, project, unmappedSpend, recon, mappings, packages }
+  return { budget, lines: lineResults, project, unmappedSpend, recon, mappings, packages, nonBuildCostSpend }
 }

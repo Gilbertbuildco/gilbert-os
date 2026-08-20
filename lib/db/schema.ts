@@ -123,6 +123,14 @@ export const costPackages = pgTable("cost_packages", {
   code: text("code"),
   name: text("name").notNull(),
   originalBudget: numeric("original_budget"),
+  // Whether this package counts toward BUILD cost totals and lender-funding
+  // actual-spend figures. Defaults true so all 21 existing standard-plan
+  // packages are unaffected. Set false for packages that are real project
+  // costs but not construction cost — e.g. "Legal & broker fees" (cost of
+  // borrowing/transacting, not cost of building; the lender does not fund
+  // it as build cost either). Excluded spend is never hidden — it is always
+  // surfaced separately by the read layer, never silently dropped.
+  isBuildCost: boolean("is_build_cost").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 

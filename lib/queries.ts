@@ -27,14 +27,42 @@ export type ProjectRow = {
   expectedGdv: number | null
   landPrice: number | null
   buildCostPerSqft: number | null
+  /**
+   * BUILD cost spend to date — confirmed-invoice net, MINUS any line items
+   * classified into a non-build-cost package (cost_packages.is_build_cost =
+   * false, e.g. "Legal & broker fees"). This is the figure compared against
+   * `originalBuildBudget` everywhere in the UI, so it must never include the
+   * cost of borrowing/transacting. That excluded spend is never dropped —
+   * it is always available separately as `nonBuildCostSpend`.
+   */
   spendToDate: number
+  /** Confirmed-invoice spend on non-build-cost packages — real project cost, deliberately excluded from spendToDate/build-cost totals. */
+  nonBuildCostSpend: number
   invoiceCount: number
 }
+
+/**
+ * Shared non-build-cost subquery: confirmed-invoice line-item net summed per
+ * project, restricted to lines classified into a package where
+ * `is_build_cost = false`. Unclassified lines (cost_package_id IS NULL) and
+ * lines on build-cost packages are never counted here — only an EXPLICIT
+ * non-build classification excludes spend from the build-cost total.
+ */
+const NON_BUILD_SPEND_SUBQUERY = sql`
+  SELECT inv2.project_id, SUM(li.line_net) AS non_build_spend
+  FROM invoice_line_items li
+  JOIN invoices inv2 ON inv2.id = li.invoice_id
+  JOIN cost_packages cp ON cp.id = li.cost_package_id
+  WHERE inv2.status = 'confirmed' AND cp.is_build_cost = false
+  GROUP BY inv2.project_id
+`
 
 export async function getProjects(): Promise<ProjectRow[]> {
   const rows = await db.execute(sql`
     SELECT p.*,
-      COALESCE(s.spend, 0) AS spend_to_date,
+      COALESCE(s.spend, 0) AS spend_raw,
+      COALESCE(nb.non_build_spend, 0) AS non_build_cost_spend,
+      COALESCE(s.spend, 0) - COALESCE(nb.non_build_spend, 0) AS spend_to_date,
       COALESCE(s.cnt, 0)   AS invoice_count
     FROM projects p
     LEFT JOIN (
@@ -43,6 +71,7 @@ export async function getProjects(): Promise<ProjectRow[]> {
       WHERE status = 'confirmed'
       GROUP BY project_id
     ) s ON s.project_id = p.id
+    LEFT JOIN (${NON_BUILD_SPEND_SUBQUERY}) nb ON nb.project_id = p.id
     ORDER BY p.created_at ASC
   `)
   return (rows.rows as any[]).map(mapProject)
@@ -51,13 +80,16 @@ export async function getProjects(): Promise<ProjectRow[]> {
 export async function getProjectBySlug(slug: string): Promise<ProjectRow | null> {
   const rows = await db.execute(sql`
     SELECT p.*,
-      COALESCE(s.spend, 0) AS spend_to_date,
+      COALESCE(s.spend, 0) AS spend_raw,
+      COALESCE(nb.non_build_spend, 0) AS non_build_cost_spend,
+      COALESCE(s.spend, 0) - COALESCE(nb.non_build_spend, 0) AS spend_to_date,
       COALESCE(s.cnt, 0)   AS invoice_count
     FROM projects p
     LEFT JOIN (
       SELECT project_id, SUM(net) AS spend, COUNT(*) AS cnt
       FROM invoices WHERE status = 'confirmed' GROUP BY project_id
     ) s ON s.project_id = p.id
+    LEFT JOIN (${NON_BUILD_SPEND_SUBQUERY}) nb ON nb.project_id = p.id
     WHERE p.slug = ${slug}
     LIMIT 1
   `)
@@ -81,6 +113,7 @@ function mapProject(r: any): ProjectRow {
     landPrice: r.land_price == null ? null : n(r.land_price),
     buildCostPerSqft: r.build_cost_per_sqft == null ? null : n(r.build_cost_per_sqft),
     spendToDate: n(r.spend_to_date),
+    nonBuildCostSpend: n(r.non_build_cost_spend),
     invoiceCount: n(r.invoice_count),
   }
 }
@@ -92,11 +125,19 @@ export type CostPackageRow = {
   originalBudget: number | null
   committed: number
   lineItemCount: number
+  /**
+   * False for packages that are real project costs but NOT construction cost
+   * (e.g. "Legal & broker fees") — excluded from build-cost/committed-spend
+   * roll-ups. The package and its `committed` figure are still returned in
+   * full here; only aggregate BUILD-cost totals elsewhere skip it. Never
+   * hide the underlying spend, just don't let it inflate build cost.
+   */
+  isBuildCost: boolean
 }
 
 export async function getCostPackagesForProject(projectId: number): Promise<CostPackageRow[]> {
   const rows = await db.execute(sql`
-    SELECT cp.id, cp.code, cp.name, cp.original_budget,
+    SELECT cp.id, cp.code, cp.name, cp.original_budget, cp.is_build_cost,
       COALESCE(li.committed, 0) AS committed,
       COALESCE(li.cnt, 0) AS line_item_count
     FROM cost_packages cp
@@ -114,6 +155,7 @@ export async function getCostPackagesForProject(projectId: number): Promise<Cost
     originalBudget: r.original_budget == null ? null : n(r.original_budget),
     committed: n(r.committed),
     lineItemCount: n(r.line_item_count),
+    isBuildCost: Boolean(r.is_build_cost),
   }))
 }
 
@@ -455,6 +497,15 @@ export type InvoiceSummary = {
   totalGross: number
   needsReviewCount: number
   unclassifiedNet: number
+  /**
+   * Net total of line items classified into a non-build-cost package
+   * (cost_packages.is_build_cost = false, e.g. "Legal & broker fees") —
+   * real spend, but the cost of borrowing/transacting, not of building.
+   * Included in `totalNet` (this is still a ledger of everything invoiced)
+   * but broken out here so it is never silently folded into a "build cost"
+   * reading of this summary.
+   */
+  nonBuildCostNet: number
   /** Gross total where payment_status = 'paid'. */
   paidGross: number
   /**
@@ -491,6 +542,7 @@ export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promi
       COALESCE(SUM(inv.gross), 0) AS total_gross,
       COUNT(*) FILTER (WHERE inv.needs_review) AS needs_review_count,
       COALESCE(SUM(li.unclassified_net), 0) AS unclassified_net,
+      COALESCE(SUM(li.non_build_net), 0) AS non_build_cost_net,
       COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status = 'paid'), 0) AS paid_gross,
       COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status IN ('unpaid', 'part_paid')), 0) AS outstanding_gross,
       COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status IS NULL), 0) AS unrecorded_gross,
@@ -500,9 +552,12 @@ export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promi
     JOIN suppliers s ON s.id = inv.supplier_id
     LEFT JOIN projects p ON p.id = inv.project_id
     LEFT JOIN (
-      SELECT invoice_id,
-        COALESCE(SUM(line_net) FILTER (WHERE cost_package_id IS NULL), 0) AS unclassified_net
-      FROM invoice_line_items GROUP BY invoice_id
+      SELECT ili.invoice_id,
+        COALESCE(SUM(ili.line_net) FILTER (WHERE ili.cost_package_id IS NULL), 0) AS unclassified_net,
+        COALESCE(SUM(ili.line_net) FILTER (WHERE cp.is_build_cost = false), 0) AS non_build_net
+      FROM invoice_line_items ili
+      LEFT JOIN cost_packages cp ON cp.id = ili.cost_package_id
+      GROUP BY ili.invoice_id
     ) li ON li.invoice_id = inv.id
     ${where}
   `)
@@ -514,6 +569,7 @@ export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promi
     totalGross: n(r.total_gross),
     needsReviewCount: n(r.needs_review_count),
     unclassifiedNet: n(r.unclassified_net),
+    nonBuildCostNet: n(r.non_build_cost_net),
     paidGross: n(r.paid_gross),
     outstandingGross: n(r.outstanding_gross),
     unrecordedGross: n(r.unrecorded_gross),
@@ -541,7 +597,10 @@ export async function getInvoiceSupplierOptions(): Promise<InvoiceSupplierOption
 export type PortfolioStats = {
   projectCount: number
   activeProjects: number
+  /** BUILD cost only — see ProjectRow.spendToDate. Excludes non-build-cost packages. */
   totalSpend: number
+  /** Confirmed-invoice spend on non-build-cost packages, across the whole portfolio. */
+  nonBuildCostSpend: number
   invoiceCount: number
   productCount: number
   supplierCount: number
@@ -552,16 +611,23 @@ export async function getPortfolioStats(): Promise<PortfolioStats> {
     SELECT
       (SELECT COUNT(*) FROM projects) AS project_count,
       (SELECT COUNT(*) FROM projects WHERE status IN ('On Site','In Progress','Active')) AS active_projects,
-      (SELECT COALESCE(SUM(net),0) FROM invoices WHERE status = 'confirmed') AS total_spend,
+      (SELECT COALESCE(SUM(net),0) FROM invoices WHERE status = 'confirmed') AS total_spend_raw,
+      (SELECT COALESCE(SUM(li.line_net),0)
+         FROM invoice_line_items li
+         JOIN invoices inv ON inv.id = li.invoice_id
+         JOIN cost_packages cp ON cp.id = li.cost_package_id
+         WHERE inv.status = 'confirmed' AND cp.is_build_cost = false) AS non_build_cost_spend,
       (SELECT COUNT(*) FROM invoices WHERE status = 'confirmed') AS invoice_count,
       (SELECT COUNT(*) FROM products) AS product_count,
       (SELECT COUNT(*) FROM suppliers) AS supplier_count
   `)
   const r = (rows.rows as any[])[0]
+  const nonBuildCostSpend = n(r.non_build_cost_spend)
   return {
     projectCount: n(r.project_count),
     activeProjects: n(r.active_projects),
-    totalSpend: n(r.total_spend),
+    totalSpend: n(r.total_spend_raw) - nonBuildCostSpend,
+    nonBuildCostSpend,
     invoiceCount: n(r.invoice_count),
     productCount: n(r.product_count),
     supplierCount: n(r.supplier_count),

@@ -31,8 +31,14 @@ interface Props {
 export function CommercialView({ projects, selectedSlug, packages, lineItems }: Props) {
   const router = useRouter()
 
-  const totalBudget = packages.reduce((s, p) => s + (p.originalBudget ?? 0), 0)
-  const totalCommitted = packages.reduce((s, p) => s + p.committed, 0)
+  // Packages flagged is_build_cost = false (e.g. legal & broker fees) are real
+  // spend but deliberately not part of the build cost, per the owner's rule.
+  // They are shown as their own figure, never folded into the build totals.
+  const buildPackages = packages.filter((p) => p.isBuildCost !== false)
+  const nonBuildPackages = packages.filter((p) => p.isBuildCost === false)
+  const totalBudget = buildPackages.reduce((s, p) => s + (p.originalBudget ?? 0), 0)
+  const totalCommitted = buildPackages.reduce((s, p) => s + p.committed, 0)
+  const nonBuildCommitted = nonBuildPackages.reduce((s, p) => s + p.committed, 0)
   const variance = totalBudget - totalCommitted
 
   const unassigned = lineItems.filter((li) => li.costPackageId == null)
@@ -68,14 +74,17 @@ export function CommercialView({ projects, selectedSlug, packages, lineItems }: 
         />
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className={cn("grid grid-cols-1 gap-4", nonBuildCommitted > 0 ? "sm:grid-cols-4" : "sm:grid-cols-3")}>
             <SummaryCard label="Total budget" value={totalBudget > 0 ? formatGBP(totalBudget) : "Not set"} />
-            <SummaryCard label="Committed (from invoices)" value={formatGBP(totalCommitted)} />
+            <SummaryCard label="Committed build cost" value={formatGBP(totalCommitted)} />
             <SummaryCard
               label="Variance"
               value={totalBudget > 0 ? formatGBP(variance) : "—"}
               accent={totalBudget > 0 ? (variance >= 0 ? "success" : "danger") : undefined}
             />
+            {nonBuildCommitted > 0 ? (
+              <SummaryCard label="Non-build costs (excluded)" value={formatGBP(nonBuildCommitted)} />
+            ) : null}
           </div>
 
           <section className="flex flex-col gap-3">

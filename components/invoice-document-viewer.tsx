@@ -41,6 +41,15 @@ export function InvoiceDocumentViewer({
   onClose,
 }: InvoiceDocumentViewerProps) {
   const [numPages, setNumPages] = useState<number | null>(null)
+  // Not every stored document is a PDF — invoices arrive as photos (png/jpg) and
+  // Word files too. react-pdf can only render PDFs, so anything else gets an
+  // image view or a download link rather than a silent failure.
+  const kind = ((): "pdf" | "image" | "other" => {
+    const src = (fileUrl ?? "").toLowerCase().split("?")[0]
+    if (/\.(png|jpe?g|gif|webp|heic)$/.test(src)) return "image"
+    if (/\.pdf$/.test(src)) return "pdf"
+    return src ? "other" : "pdf"
+  })()
   const [loadError, setLoadError] = useState(false)
   const [containerWidth, setContainerWidth] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -187,6 +196,28 @@ export function InvoiceDocumentViewer({
               </a>
               .
             </p>
+          </div>
+        ) : kind === "image" ? (
+          <div className="flex flex-col items-center">
+            <img
+              src={fileUrl ?? ""}
+              alt={`${supplierName} invoice ${invoiceNumber ?? ""}`.trim()}
+              className="max-h-[70vh] w-auto max-w-full rounded-lg border border-border bg-card shadow-sm"
+            />
+          </div>
+        ) : kind === "other" ? (
+          <div className="flex flex-col items-center gap-3 py-16 text-center">
+            <p className="text-sm text-muted-foreground">
+              This document is a {(fileUrl ?? "").split("?")[0].split(".").pop()?.toUpperCase() || "file"} and cannot be previewed here.
+            </p>
+            <a
+              href={fileUrl ?? "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-primary hover:underline"
+            >
+              Open the original file
+            </a>
           </div>
         ) : (
           <div className="flex flex-col items-center">

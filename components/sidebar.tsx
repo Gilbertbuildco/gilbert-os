@@ -9,6 +9,7 @@ import {
   Wallet,
   Truck,
   ReceiptText,
+  ListChecks,
   Store,
   Map,
   Menu,
@@ -16,19 +17,38 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-const navItems = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
-  { label: "Projects", href: "/projects", icon: Building2 },
-  { label: "Commercial", href: "/commercial", icon: Wallet },
-  { label: "Procurement", href: "/procurement", icon: Truck },
-  { label: "Invoices", href: "/invoices", icon: ReceiptText },
-  { label: "Suppliers", href: "/suppliers", icon: Store },
-  { label: "Land Appraisal", href: "/land-appraisal", icon: Map },
-]
+/**
+ * A route is "active" if it matches exactly or is a genuine sub-route — but
+ * `/invoices/review` gets its own nav entry, so it must NOT also light up
+ * the parent `/invoices` tab (a plain `startsWith` would double-highlight).
+ */
+function isNavActive(href: string, pathname: string): boolean {
+  if (href === "/") return pathname === "/"
+  if (href === "/invoices") {
+    return pathname === "/invoices" || (pathname.startsWith("/invoices/") && !pathname.startsWith("/invoices/review"))
+  }
+  return pathname === href || pathname.startsWith(`${href}/`)
+}
 
-export function Sidebar() {
+interface Props {
+  /** Count of invoices with needs_review = true, across every project. Omit/0 hides the badge. */
+  reviewCount?: number
+}
+
+export function Sidebar({ reviewCount = 0 }: Props) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
+
+  const navItems = [
+    { label: "Dashboard", href: "/", icon: LayoutDashboard },
+    { label: "Projects", href: "/projects", icon: Building2 },
+    { label: "Commercial", href: "/commercial", icon: Wallet },
+    { label: "Procurement", href: "/procurement", icon: Truck },
+    { label: "Invoices", href: "/invoices", icon: ReceiptText },
+    { label: "Review", href: "/invoices/review", icon: ListChecks, badge: reviewCount > 0 ? reviewCount : undefined },
+    { label: "Suppliers", href: "/suppliers", icon: Store },
+    { label: "Land Appraisal", href: "/land-appraisal", icon: Map },
+  ]
 
   // Close the drawer whenever the route changes (e.g. after tapping a link).
   useEffect(() => {
@@ -48,8 +68,7 @@ export function Sidebar() {
   const navLinks = (
     <nav className="flex flex-1 flex-col gap-0.5 px-3 py-4" aria-label="Primary">
       {navItems.map((item) => {
-        const isActive =
-          item.href === "/" ? pathname === "/" : pathname.startsWith(item.href)
+        const isActive = isNavActive(item.href, pathname)
         const Icon = item.icon
         return (
           <Link
@@ -64,7 +83,12 @@ export function Sidebar() {
             )}
           >
             <Icon className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} />
-            <span>{item.label}</span>
+            <span className="flex-1">{item.label}</span>
+            {item.badge ? (
+              <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-warning-bg px-1.5 py-0.5 text-[10px] font-semibold text-warning">
+                {item.badge}
+              </span>
+            ) : null}
           </Link>
         )
       })}

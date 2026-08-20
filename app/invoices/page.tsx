@@ -1,6 +1,16 @@
 import { Suspense } from "react"
 import Link from "next/link"
-import { Upload, ReceiptText, ChevronUp, ChevronDown, FileWarning, CheckCircle2, Clock, CircleHelp } from "lucide-react"
+import {
+  Upload,
+  ReceiptText,
+  ChevronUp,
+  ChevronDown,
+  FileWarning,
+  CheckCircle2,
+  Clock,
+  CircleHelp,
+  ListChecks,
+} from "lucide-react"
 import { PageHeader } from "@/components/page-header"
 import { EmptyState } from "@/components/empty-state"
 import { InvoiceFilterBar } from "@/components/invoice-filter-bar"
@@ -32,6 +42,8 @@ type SearchParams = {
   payment?: string
   review?: string
   unclassified?: string
+  question?: string
+  answered?: string
   sort?: string
   dir?: string
   page?: string
@@ -62,6 +74,8 @@ function parseFilters(sp: SearchParams): InvoiceListFilters {
     needsReview: sp.review === "1" ? true : undefined,
     unclassifiedOnly: sp.unclassified === "1" ? true : undefined,
     paymentStatus: toPaymentStatus(sp.payment),
+    hasQuestion: sp.question === "1" ? true : undefined,
+    answered: sp.answered === "1" ? true : undefined,
   }
 }
 
@@ -112,6 +126,9 @@ export default async function InvoicesPage({
   const sort: InvoiceSort = SORT_COLUMNS.includes(sp.sort as InvoiceSort) ? (sp.sort as InvoiceSort) : "date"
   const direction: SortDirection = sp.dir === "asc" ? "asc" : "desc"
   const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1)
+  // Sitewide (unfiltered) count for the header button — the review queue
+  // itself is always global, so this must match what it will actually show.
+  const reviewQueueCount = (await getInvoiceSummary({ needsReview: true })).count
 
   return (
     <>
@@ -119,13 +136,27 @@ export default async function InvoicesPage({
         title="Invoices"
         description="Capture supplier invoices to feed both project costs and procurement price history."
         actions={
-          <Link
-            href="/invoices/new"
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
-          >
-            <Upload className="h-4 w-4" strokeWidth={1.75} />
-            Upload Invoice
-          </Link>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href="/invoices/review"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              <ListChecks className="h-4 w-4" strokeWidth={1.75} />
+              Review queue
+              {reviewQueueCount > 0 ? (
+                <span className="rounded-full bg-warning-bg px-1.5 py-0.5 text-xs font-semibold text-warning">
+                  {formatNumber(reviewQueueCount)}
+                </span>
+              ) : null}
+            </Link>
+            <Link
+              href="/invoices/new"
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+            >
+              <Upload className="h-4 w-4" strokeWidth={1.75} />
+              Upload Invoice
+            </Link>
+          </div>
         }
       />
       <main className="flex flex-col gap-5 px-4 py-8 sm:px-8">
@@ -154,41 +185,69 @@ async function SummarySection({
   filters: InvoiceListFilters
   baseFilters: InvoiceListFilters
 }) {
-  const [summary, allSummary, reviewSummary, unclassifiedSummary, creditsSummary] = await Promise.all([
-    getInvoiceSummary(filters),
-    getInvoiceSummary(baseFilters),
-    getInvoiceSummary({ ...baseFilters, needsReview: true }),
-    getInvoiceSummary({ ...baseFilters, unclassifiedOnly: true }),
-    getInvoiceSummary({ ...baseFilters, transactionType: "credit" }),
-  ])
+  const [summary, allSummary, reviewSummary, unclassifiedSummary, creditsSummary, questionSummary, answeredSummary] =
+    await Promise.all([
+      getInvoiceSummary(filters),
+      getInvoiceSummary(baseFilters),
+      getInvoiceSummary({ ...baseFilters, needsReview: true }),
+      getInvoiceSummary({ ...baseFilters, unclassifiedOnly: true }),
+      getInvoiceSummary({ ...baseFilters, transactionType: "credit" }),
+      getInvoiceSummary({ ...baseFilters, hasQuestion: true }),
+      getInvoiceSummary({ ...baseFilters, answered: true }),
+    ])
 
-  const activeChip: "all" | "review" | "unclassified" | "credits" =
-    sp.review === "1" ? "review" : sp.unclassified === "1" ? "unclassified" : sp.type === "credit" ? "credits" : "all"
+  const activeChip: "all" | "review" | "unclassified" | "credits" | "question" | "answered" =
+    sp.review === "1"
+      ? "review"
+      : sp.unclassified === "1"
+        ? "unclassified"
+        : sp.type === "credit"
+          ? "credits"
+          : sp.question === "1"
+            ? "question"
+            : sp.answered === "1"
+              ? "answered"
+              : "all"
+
+  // Every chip resets the OTHER workflow toggles — they are mutually exclusive views on top of baseFilters.
+  const clearToggles = { review: undefined, unclassified: undefined, type: undefined, question: undefined, answered: undefined }
 
   const chips = [
     {
       key: "all" as const,
       label: "All",
       count: allSummary.count,
-      href: hrefFor(sp, { review: undefined, unclassified: undefined, type: undefined }),
+      href: hrefFor(sp, clearToggles),
     },
     {
       key: "review" as const,
       label: "Needs review",
       count: reviewSummary.count,
-      href: hrefFor(sp, { review: "1", unclassified: undefined, type: undefined }),
+      href: hrefFor(sp, { ...clearToggles, review: "1" }),
     },
     {
       key: "unclassified" as const,
       label: "Unclassified",
       count: unclassifiedSummary.count,
-      href: hrefFor(sp, { unclassified: "1", review: undefined, type: undefined }),
+      href: hrefFor(sp, { ...clearToggles, unclassified: "1" }),
     },
     {
       key: "credits" as const,
       label: "Credits",
       count: creditsSummary.count,
-      href: hrefFor(sp, { type: "credit", review: undefined, unclassified: undefined }),
+      href: hrefFor(sp, { ...clearToggles, type: "credit" }),
+    },
+    {
+      key: "question" as const,
+      label: "Questions for you",
+      count: questionSummary.count,
+      href: hrefFor(sp, { ...clearToggles, question: "1" }),
+    },
+    {
+      key: "answered" as const,
+      label: "Answered",
+      count: answeredSummary.count,
+      href: hrefFor(sp, { ...clearToggles, answered: "1" }),
     },
   ]
 

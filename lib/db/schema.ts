@@ -105,6 +105,15 @@ export const invoices = pgTable("invoices", {
   paymentStatus: text("payment_status"),
   paidDate: date("paid_date"),
   paymentNotes: text("payment_notes"),
+  // Two-way review-question channel (review queue). `reviewQuestion` is a
+  // question the assistant has attached to this invoice, awaiting the owner;
+  // `reviewAnswer` is the owner's reply. All four nullable, no defaults —
+  // unknown stays null (non-negotiable #1). Answering never clears the
+  // question: the pair together is the record.
+  reviewQuestion: text("review_question"),
+  reviewQuestionAt: timestamp("review_question_at", { withTimezone: true }),
+  reviewAnswer: text("review_answer"),
+  reviewAnswerAt: timestamp("review_answer_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
@@ -516,6 +525,31 @@ export const quotes = pgTable("quotes", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 })
 
+/**
+ * One row per run of the daily Xero-half reconciliation job (payment status
+ * sync -> bill push -> read-only three-way report), whether triggered by the
+ * Vercel cron (`app/api/cron/reconcile`) or a manual CLI run. Lets the owner
+ * see run history without needing the Mac's own scheduled-task log. `summary`
+ * holds the full structured result (counts + skip/change reasons) for
+ * drill-down; the flat columns are the headline numbers for a quick list
+ * view. `ok = false` with `error` set means a phase threw — the run still
+ * gets a row so a silent failure is never invisible.
+ *
+ * As with every table in this schema, there is no DB-level FK — nothing here
+ * references another table.
+ */
+export const reconciliationRuns = pgTable("reconciliation_runs", {
+  id: serial("id").primaryKey(),
+  ranAt: timestamp("ran_at", { withTimezone: true }).notNull().defaultNow(),
+  ok: boolean("ok").notNull(),
+  paymentsSynced: integer("payments_synced"),
+  billsCreated: integer("bills_created"),
+  paymentsMissingInvoice: integer("payments_missing_invoice"),
+  missingTotal: numeric("missing_total"),
+  summary: jsonb("summary"),
+  error: text("error"),
+})
+
 export type Project = typeof projects.$inferSelect
 export type Supplier = typeof suppliers.$inferSelect
 export type Product = typeof products.$inferSelect
@@ -537,3 +571,4 @@ export type XeroSyncState = typeof xeroSyncState.$inferSelect
 export type XeroAccountMap = typeof xeroAccountMap.$inferSelect
 export type XeroOauthState = typeof xeroOauthState.$inferSelect
 export type Quote = typeof quotes.$inferSelect
+export type ReconciliationRun = typeof reconciliationRuns.$inferSelect

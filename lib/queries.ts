@@ -266,6 +266,12 @@ export type InvoiceRow = {
   /** Cash-flow payment state. Null means "not recorded" — never inferred. */
   paymentStatus: "unpaid" | "paid" | "part_paid" | null
   paidDate: string | null
+  /** Two-way review-question channel. Null means no question is outstanding. */
+  reviewQuestion: string | null
+  reviewQuestionAt: string | null
+  /** The owner's reply. Null means unanswered. */
+  reviewAnswer: string | null
+  reviewAnswerAt: string | null
 }
 
 /**
@@ -284,6 +290,10 @@ export type InvoiceListFilters = {
   unclassifiedOnly?: boolean
   /** "unrecorded" means payment_status IS NULL — not the same fact as "unpaid". */
   paymentStatus?: "unpaid" | "paid" | "part_paid" | "unrecorded"
+  /** review_question IS NOT NULL AND review_answer IS NULL — awaiting the owner. */
+  hasQuestion?: boolean
+  /** review_question IS NOT NULL AND review_answer IS NOT NULL — awaiting the assistant. */
+  answered?: boolean
 }
 
 export type InvoiceSort = "date" | "supplier" | "number" | "net" | "gross"
@@ -349,6 +359,20 @@ function buildInvoiceFilterConditions(filters: InvoiceListFilters): SQL[] {
   } else if (filters.paymentStatus != null) {
     conditions.push(sql`inv.payment_status = ${filters.paymentStatus}`)
   }
+  if (filters.hasQuestion != null) {
+    conditions.push(
+      filters.hasQuestion
+        ? sql`inv.review_question IS NOT NULL AND inv.review_answer IS NULL`
+        : sql`NOT (inv.review_question IS NOT NULL AND inv.review_answer IS NULL)`,
+    )
+  }
+  if (filters.answered != null) {
+    conditions.push(
+      filters.answered
+        ? sql`inv.review_question IS NOT NULL AND inv.review_answer IS NOT NULL`
+        : sql`NOT (inv.review_question IS NOT NULL AND inv.review_answer IS NOT NULL)`,
+    )
+  }
 
   return conditions
 }
@@ -375,6 +399,7 @@ export async function getInvoices(options: InvoiceListOptions = {}): Promise<Inv
       inv.source_page_start, inv.source_page_end,
       inv.needs_review, inv.reconciled, inv.confidence,
       inv.payment_status, inv.paid_date,
+      inv.review_question, inv.review_question_at, inv.review_answer, inv.review_answer_at,
       COALESCE(li.cnt, 0) AS line_item_count,
       COALESCE(li.classified_cnt, 0) AS classified_line_count,
       COALESCE(li.unclassified_net, 0) AS unclassified_net
@@ -416,6 +441,10 @@ export async function getInvoices(options: InvoiceListOptions = {}): Promise<Inv
     unclassifiedNet: n(r.unclassified_net),
     paymentStatus: r.payment_status ?? null,
     paidDate: r.paid_date ? String(r.paid_date) : null,
+    reviewQuestion: r.review_question ?? null,
+    reviewQuestionAt: r.review_question_at ? new Date(r.review_question_at).toISOString() : null,
+    reviewAnswer: r.review_answer ?? null,
+    reviewAnswerAt: r.review_answer_at ? new Date(r.review_answer_at).toISOString() : null,
   }))
 }
 
@@ -438,6 +467,10 @@ export type InvoiceSummary = {
   outstandingGross: number
   /** Gross total where payment_status IS NULL — "not recorded", not "unpaid". */
   unrecordedGross: number
+  /** Count with review_question IS NOT NULL AND review_answer IS NULL — awaiting the owner. */
+  questionsForOwner: number
+  /** Count with review_question IS NOT NULL AND review_answer IS NOT NULL — awaiting the assistant. */
+  answersForAssistant: number
 }
 
 /**
@@ -460,7 +493,9 @@ export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promi
       COALESCE(SUM(li.unclassified_net), 0) AS unclassified_net,
       COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status = 'paid'), 0) AS paid_gross,
       COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status IN ('unpaid', 'part_paid')), 0) AS outstanding_gross,
-      COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status IS NULL), 0) AS unrecorded_gross
+      COALESCE(SUM(inv.gross) FILTER (WHERE inv.payment_status IS NULL), 0) AS unrecorded_gross,
+      COUNT(*) FILTER (WHERE inv.review_question IS NOT NULL AND inv.review_answer IS NULL) AS questions_for_owner,
+      COUNT(*) FILTER (WHERE inv.review_question IS NOT NULL AND inv.review_answer IS NOT NULL) AS answers_for_assistant
     FROM invoices inv
     JOIN suppliers s ON s.id = inv.supplier_id
     LEFT JOIN projects p ON p.id = inv.project_id
@@ -482,6 +517,8 @@ export async function getInvoiceSummary(filters: InvoiceListFilters = {}): Promi
     paidGross: n(r.paid_gross),
     outstandingGross: n(r.outstanding_gross),
     unrecordedGross: n(r.unrecorded_gross),
+    questionsForOwner: n(r.questions_for_owner),
+    answersForAssistant: n(r.answers_for_assistant),
   }
 }
 
@@ -604,6 +641,7 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
       inv.net, inv.vat, inv.gross, inv.status,
       inv.needs_review, inv.reconciled, inv.confidence,
       inv.payment_status, inv.paid_date,
+      inv.review_question, inv.review_question_at, inv.review_answer, inv.review_answer_at,
       COALESCE(li.cnt, 0) AS line_item_count,
       COALESCE(li.classified_cnt, 0) AS classified_line_count,
       COALESCE(li.unclassified_net, 0) AS unclassified_net
@@ -644,6 +682,10 @@ export async function getRecentInvoicesForProject(projectId: number, limit = 8):
     unclassifiedNet: n(r.unclassified_net),
     paymentStatus: r.payment_status ?? null,
     paidDate: r.paid_date ? String(r.paid_date) : null,
+    reviewQuestion: r.review_question ?? null,
+    reviewQuestionAt: r.review_question_at ? new Date(r.review_question_at).toISOString() : null,
+    reviewAnswer: r.review_answer ?? null,
+    reviewAnswerAt: r.review_answer_at ? new Date(r.review_answer_at).toISOString() : null,
   }))
 }
 
@@ -765,6 +807,161 @@ export async function getCostPackageOptions(projectId: number): Promise<CostPack
     id: Number(r.id),
     code: r.code ?? null,
     name: r.name,
+  }))
+}
+
+export type ReviewQueueLineItem = {
+  id: number
+  description: string
+  quantity: number | null
+  unit: string | null
+  lineNet: number
+  costPackageId: number | null
+  costPackageCode: string | null
+  costPackageName: string | null
+}
+
+export type ReviewQueueEntry = InvoiceRow & {
+  lineItems: ReviewQueueLineItem[]
+  /** This invoice's own project's cost-package options, for inline classification. Empty if unassigned. */
+  costPackageOptions: CostPackageOption[]
+}
+
+export type ReviewQueueOptions = {
+  /** Row offset into the needs_review ASC-by-date ordering. Omit for the first page. */
+  cursor?: number
+  limit?: number
+}
+
+/**
+ * The review queue: every invoice with needs_review = true, oldest invoice
+ * first, each carrying everything the queue UI needs to render and classify
+ * it on one screen without further round trips — its line items (with any
+ * existing cost-package classification) and its OWN project's cost-package
+ * options. `projectId = null` returns the queue across all projects.
+ *
+ * Cost-package options are resolved per invoice's own project (never a
+ * shared/global list) — classification stays scoped to the project the spend
+ * actually belongs to, same rule as `getClassificationSuggestions`.
+ *
+ * Three queries total regardless of page size: the invoice page itself, then
+ * one batched fetch each for line items and cost packages across that page's
+ * invoice/project ids.
+ */
+export async function getReviewQueue(
+  projectId: number | null,
+  options: ReviewQueueOptions = {},
+): Promise<ReviewQueueEntry[]> {
+  const limit = options.limit ?? 20
+  const offset = options.cursor ?? 0
+
+  const projectCondition = projectId != null ? sql`AND inv.project_id = ${projectId}` : sql``
+
+  const invoiceRows = await db.execute(sql`
+    SELECT inv.id, inv.project_id, s.name AS supplier_name, p.name AS project_name,
+      inv.invoice_number, inv.invoice_date, inv.transaction_type,
+      inv.net, inv.vat, inv.gross, inv.status,
+      inv.source_file_name, inv.source_file_pathname,
+      inv.source_page_start, inv.source_page_end,
+      inv.needs_review, inv.reconciled, inv.confidence,
+      inv.payment_status, inv.paid_date,
+      inv.review_question, inv.review_question_at, inv.review_answer, inv.review_answer_at,
+      COALESCE(li.cnt, 0) AS line_item_count,
+      COALESCE(li.classified_cnt, 0) AS classified_line_count,
+      COALESCE(li.unclassified_net, 0) AS unclassified_net
+    FROM invoices inv
+    JOIN suppliers s ON s.id = inv.supplier_id
+    LEFT JOIN projects p ON p.id = inv.project_id
+    LEFT JOIN (
+      SELECT invoice_id,
+        COUNT(*) AS cnt,
+        COUNT(*) FILTER (WHERE cost_package_id IS NOT NULL) AS classified_cnt,
+        COALESCE(SUM(line_net) FILTER (WHERE cost_package_id IS NULL), 0) AS unclassified_net
+      FROM invoice_line_items GROUP BY invoice_id
+    ) li ON li.invoice_id = inv.id
+    WHERE inv.needs_review = true ${projectCondition}
+    ORDER BY inv.invoice_date ASC NULLS LAST, inv.id ASC
+    LIMIT ${limit}
+    OFFSET ${offset}
+  `)
+
+  const rows = invoiceRows.rows as any[]
+  if (rows.length === 0) return []
+
+  const invoiceIds = rows.map((r) => Number(r.id))
+  const projectIdsInPage = [...new Set(rows.map((r) => r.project_id).filter((v) => v != null).map(Number))]
+
+  const [lineRows, packageRows] = await Promise.all([
+    db.execute(sql`
+      SELECT li.id, li.invoice_id, li.description, li.quantity, li.unit, li.line_net, li.cost_package_id,
+        cp.code AS cost_package_code, cp.name AS cost_package_name
+      FROM invoice_line_items li
+      LEFT JOIN cost_packages cp ON cp.id = li.cost_package_id
+      WHERE li.invoice_id IN ${invoiceIds}
+      ORDER BY li.id ASC
+    `),
+    projectIdsInPage.length
+      ? db.execute(sql`
+          SELECT id, project_id, code, name FROM cost_packages
+          WHERE project_id IN ${projectIdsInPage}
+          ORDER BY code ASC NULLS LAST, id ASC
+        `)
+      : Promise.resolve({ rows: [] as any[] }),
+  ])
+
+  const linesByInvoice = new Map<number, ReviewQueueLineItem[]>()
+  for (const r of lineRows.rows as any[]) {
+    const list = linesByInvoice.get(Number(r.invoice_id)) ?? []
+    list.push({
+      id: r.id,
+      description: r.description,
+      quantity: r.quantity == null ? null : n(r.quantity),
+      unit: r.unit,
+      lineNet: n(r.line_net),
+      costPackageId: r.cost_package_id ?? null,
+      costPackageCode: r.cost_package_code ?? null,
+      costPackageName: r.cost_package_name ?? null,
+    })
+    linesByInvoice.set(Number(r.invoice_id), list)
+  }
+
+  const packagesByProject = new Map<number, CostPackageOption[]>()
+  for (const r of packageRows.rows as any[]) {
+    const pid = Number(r.project_id)
+    const list = packagesByProject.get(pid) ?? []
+    list.push({ id: Number(r.id), code: r.code ?? null, name: r.name })
+    packagesByProject.set(pid, list)
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    supplierName: r.supplier_name,
+    projectName: r.project_name,
+    invoiceNumber: r.invoice_number,
+    invoiceDate: r.invoice_date ? String(r.invoice_date) : null,
+    transactionType: r.transaction_type,
+    net: n(r.net),
+    vat: n(r.vat),
+    gross: n(r.gross),
+    status: r.status,
+    lineItemCount: n(r.line_item_count),
+    sourceFileName: r.source_file_name ?? null,
+    sourceFilePathname: r.source_file_pathname ?? null,
+    sourcePageStart: r.source_page_start == null ? null : Number(r.source_page_start),
+    sourcePageEnd: r.source_page_end == null ? null : Number(r.source_page_end),
+    needsReview: Boolean(r.needs_review),
+    reconciled: Boolean(r.reconciled),
+    confidence: r.confidence ?? null,
+    classifiedLineCount: n(r.classified_line_count),
+    unclassifiedNet: n(r.unclassified_net),
+    paymentStatus: r.payment_status ?? null,
+    paidDate: r.paid_date ? String(r.paid_date) : null,
+    reviewQuestion: r.review_question ?? null,
+    reviewQuestionAt: r.review_question_at ? new Date(r.review_question_at).toISOString() : null,
+    reviewAnswer: r.review_answer ?? null,
+    reviewAnswerAt: r.review_answer_at ? new Date(r.review_answer_at).toISOString() : null,
+    lineItems: linesByInvoice.get(Number(r.id)) ?? [],
+    costPackageOptions: r.project_id == null ? [] : (packagesByProject.get(Number(r.project_id)) ?? []),
   }))
 }
 

@@ -668,6 +668,80 @@ export async function setInvoicePayment(invoiceId: number, input: SetInvoicePaym
   revalidatePath("/invoices")
 }
 
+// ---------------------------------------------------------------------------
+// Review queue: two-way question channel
+// ---------------------------------------------------------------------------
+
+const REVIEW_QUESTION_MAX_LENGTH = 2000
+
+/**
+ * Attach a question the assistant wants the owner to answer about this
+ * invoice. Clears any previous answer — a new question means the previous
+ * question/answer pair is no longer the live one. Never fabricates content:
+ * the caller supplies the question text; this only validates and persists it.
+ */
+export async function askInvoiceQuestion(invoiceId: number, question: string) {
+  const trimmed = question.trim()
+  if (!trimmed) {
+    throw new Error("A question is required.")
+  }
+  if (trimmed.length > REVIEW_QUESTION_MAX_LENGTH) {
+    throw new Error(`Question is too long (max ${REVIEW_QUESTION_MAX_LENGTH} characters).`)
+  }
+
+  await db
+    .update(invoices)
+    .set({
+      reviewQuestion: trimmed,
+      reviewQuestionAt: new Date(),
+      reviewAnswer: null,
+      reviewAnswerAt: null,
+    })
+    .where(eq(invoices.id, invoiceId))
+
+  revalidatePath("/invoices")
+}
+
+/**
+ * Records the owner's reply to an outstanding question. Does NOT clear
+ * review_question — the question/answer pair together is the record, so the
+ * assistant can see exactly what was asked alongside what was answered.
+ */
+export async function answerInvoiceQuestion(invoiceId: number, answer: string) {
+  const trimmed = answer.trim()
+  if (!trimmed) {
+    throw new Error("An answer is required.")
+  }
+  if (trimmed.length > REVIEW_QUESTION_MAX_LENGTH) {
+    throw new Error(`Answer is too long (max ${REVIEW_QUESTION_MAX_LENGTH} characters).`)
+  }
+
+  await db
+    .update(invoices)
+    .set({
+      reviewAnswer: trimmed,
+      reviewAnswerAt: new Date(),
+    })
+    .where(eq(invoices.id, invoiceId))
+
+  revalidatePath("/invoices")
+}
+
+/**
+ * The "approve" action for the review queue — sets `needs_review`. Setting it
+ * to `false` takes the invoice out of the queue; setting it to `true` puts it
+ * back. Independent of the question channel — an invoice can be marked
+ * reviewed with an outstanding question still attached, or vice versa.
+ */
+export async function markInvoiceReviewed(invoiceId: number, reviewed: boolean) {
+  await db
+    .update(invoices)
+    .set({ needsReview: !reviewed })
+    .where(eq(invoices.id, invoiceId))
+
+  revalidatePath("/invoices")
+}
+
 export async function deleteInvoice(id: number) {
   await db.delete(priceRecords).where(eq(priceRecords.invoiceId, id))
   await db.delete(invoiceLineItems).where(eq(invoiceLineItems.invoiceId, id))

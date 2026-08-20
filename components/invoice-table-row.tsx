@@ -120,6 +120,11 @@ export function InvoiceTableRow({ inv, columnCount, projectId }: Props) {
               {inv.needsReview ? "Needs review" : "Reviewed"}
             </StatusBadge>
             {inv.transactionType === "credit" ? <StatusBadge variant="info">Credit</StatusBadge> : null}
+            {inv.reviewQuestion && !inv.reviewAnswer ? (
+              <StatusBadge variant="info" dot>
+                Question for you
+              </StatusBadge>
+            ) : null}
             {inv.confidence && inv.confidence !== "high" ? (
               <span className="text-[11px] text-muted-foreground">{inv.confidence} confidence extraction</span>
             ) : null}
@@ -246,20 +251,31 @@ function packageLabel(code: string | null, name: string) {
 }
 
 /**
+ * The minimal shape ClassificationCell actually needs from a line item. Kept
+ * narrow (rather than the full InvoiceLineItemRow) so other line-item shapes
+ * — e.g. ReviewQueueLineItem on the review queue — satisfy it structurally
+ * without adapting fields they don't carry (unit price, VAT, gross).
+ */
+export type ClassifiableLine = Pick<InvoiceLineItemRow, "id" | "costPackageId" | "costPackageCode" | "costPackageName">
+
+/**
  * Per-line classification control. Unclassified lines get a picker (a learned
  * suggestion, when one exists, pre-fills it but is visibly flagged and never
  * auto-committed — the human still has to act). Classified lines show their
  * package with change/clear affordances. Never calls classifyMatchingLines
  * silently: it is always a separate, explicit follow-up action.
+ *
+ * Exported so other surfaces (the review queue) reuse this exact control
+ * instead of re-implementing the classify/clear/apply-to-matching pattern.
  */
-function ClassificationCell({
+export function ClassificationCell({
   line,
   options,
   suggestion,
   projectId,
   onChanged,
 }: {
-  line: InvoiceLineItemRow
+  line: ClassifiableLine
   options: CostPackageOption[]
   suggestion: ClassificationSuggestion | undefined
   projectId: number | null

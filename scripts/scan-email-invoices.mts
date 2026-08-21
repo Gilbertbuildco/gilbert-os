@@ -70,9 +70,11 @@ function batchScript(from: number, to: number, days: number, mailbox: string) {
 tell application "Mail"
   with timeout of 55 seconds
     set out to ""
+    set okCount to 0
     repeat with i from ${from} to ${to}
       try
         set m to message i of ${box}
+        set okCount to okCount + 1
         set d to date received of m
         if d > ((current date) - (${days} * days)) then
           set att to ""
@@ -88,7 +90,12 @@ tell application "Mail"
         end if
       end try
     end repeat
-    return out
+    -- Report how many messages were actually reachable. Every fetch above is
+    -- wrapped in `try`, so when Mail is slow EVERY message errors, each error
+    -- is swallowed, and the loop returns an empty string with no failure of
+    -- any kind. A broken scan and a clean "no invoices found" then look
+    -- identical. This counter is what tells them apart.
+    return "OK:" & okCount & linefeed & out
   end timeout
 end tell`
 }
@@ -116,8 +123,19 @@ for (const box of MAILBOXES) {
       await new Promise((r) => setTimeout(r, 5000))
     }
   }
+  // Refuse to treat an unreachable mailbox as an empty one.
+  const okLine = out.split("\n").find((l) => l.startsWith("OK:"))
+  const reached = okLine ? Number(okLine.slice(3)) : 0
+  const expected = end - start + 1
+  if (reached < expected * 0.5) {
+    throw new Error(
+      `Mail returned only ${reached} of ${expected} messages for ${box} ${start}-${end}. ` +
+      `The scan is INCOMPLETE and is being failed rather than reported as "no invoices found". ` +
+      `Restart Mail (pkill -9 -x Mail; open -a Mail) and re-run.`,
+    )
+  }
   for (const line of out.split("\n")) {
-    if (!line.trim()) continue
+    if (!line.trim() || line.startsWith("OK:")) continue
     const [key, date, sender, subject, atts] = line.split("|||")
     if (!key) continue
     rows.push({ key, date, sender: sender ?? "", subject: subject ?? "", atts: (atts ?? "").split(";").filter(Boolean), box })

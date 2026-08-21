@@ -105,6 +105,10 @@ export const invoices = pgTable("invoices", {
   paymentStatus: text("payment_status"),
   paidDate: date("paid_date"),
   paymentNotes: text("payment_notes"),
+  // Amount actually settled. NULL means unknown — never inferred from
+  // payment_status, so a 'part_paid' invoice with no figure stays NULL rather
+  // than carrying a guessed split.
+  amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }),
   // Two-way review-question channel (review queue). `reviewQuestion` is a
   // question the assistant has attached to this invoice, awaiting the owner;
   // `reviewAnswer` is the owner's reply. All four nullable, no defaults —

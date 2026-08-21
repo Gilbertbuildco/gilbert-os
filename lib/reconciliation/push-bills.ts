@@ -151,17 +151,24 @@ export async function pushInvoicesToXero({ execute, limit }: { execute: boolean;
   const skips: PushBillsSkip[] = []
   const plan: any[] = []
   for (const c of candidates) {
-    const k = `${norm(c.supplier)}|${norm(c.invoice_number)}`
-    if (billKeys.has(k)) {
+    // Resolve the Xero contact FIRST. A supplier is routinely named differently
+    // in Xero than in the OS — "Bradfords" vs "Bradfords Building Supplies
+    // Limited" — and both duplicate guards below compare contact names. Keying
+    // them on the OS name alone made 15 Bradfords bills that already existed in
+    // Xero read as new; an --execute would have created every one of them a
+    // second time. Both guards now test the resolved contact name as well.
+    const contact = resolveContact(c.supplier)
+    const names = contact ? [norm(c.supplier), norm((contact as any).Name)] : [norm(c.supplier)]
+
+    if (names.some((n) => billKeys.has(`${n}|${norm(c.invoice_number)}`))) {
       skips.push({ reason: "BILL_EXISTS", supplier: c.supplier, invoiceNumber: c.invoice_number, amount: money(c.gross) })
       continue
     }
-    const paidAlready = spend.find((t: any) => norm(t.Contact?.Name) === norm(c.supplier) && Math.abs(Number(t.Total) - Number(c.gross)) < 0.01)
+    const paidAlready = spend.find((t: any) => names.includes(norm(t.Contact?.Name)) && Math.abs(Number(t.Total) - Number(c.gross)) < 0.01)
     if (paidAlready) {
       skips.push({ reason: "ALREADY_PAID_AS_SPEND", supplier: c.supplier, invoiceNumber: c.invoice_number, amount: money(c.gross) })
       continue
     }
-    const contact = resolveContact(c.supplier)
     if (!contact) {
       skips.push({ reason: "NO_XERO_CONTACT", supplier: c.supplier, invoiceNumber: c.invoice_number, amount: money(c.gross) })
       continue

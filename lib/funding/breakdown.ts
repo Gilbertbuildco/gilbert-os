@@ -1,23 +1,38 @@
 import "server-only"
 import { pool } from "../db"
-import { getFundingCommercial } from "./queries"
+import { apportionSpend, type FundingLineInput, type PackageSpendInput } from "./calculations"
+import { getDrawdownEvents, getFundingCommercial } from "./queries"
 
 /**
- * Every line of the build: what it was allowed, what has been spent, what is
- * committed on top, and what is left.
+ * The forecasting view: per funding line, what has been DRAWN from the lender,
+ * what has been SPENT, and what remains of each.
  *
- * SPEND IS APPORTIONED, never summed per line. A cost package mapped to four
- * funding lines must have its spend split between them — summing the package
- * against each line counts one plumbing invoice four times and manufactures a
- * six-figure overspend. `getFundingCommercial` runs the pure engine's
- * `apportionSpend`, and this file only reads its result (non-negotiable #8).
+ * ONLY MONEY THAT HAS ACTUALLY LEFT THE ACCOUNT. Owner, 2026-08-23: "at no
+ * stage should future costs come into the build costs. the only time something
+ * enters the build cost list (as in, whats it costing us) is when its been
+ * paid." So spend here counts PAID invoices only — not merely confirmed ones.
+ * An unpaid invoice is a liability, not a cost incurred, and appears on the
+ * Cash Position page as a bill to pay rather than here.
  *
- * COMMITTED is what a supplier has a signed quote for but has not yet
- * invoiced, plus the owner's own allowances. The two are kept apart: a quote
- * has a document behind it, an allowance is a figure the owner stated. They
- * are attached to a line only where the supplier's trade maps unambiguously to
- * it — where it does not, the money is reported separately rather than being
- * spread across lines it might not belong to.
+ * A part-paid invoice contributes the paid PROPORTION of each of its lines
+ * (amount_paid / gross), so the windows invoice adds what has actually been
+ * handed over and no more.
+ *
+ * The engine's own `actualSpendToDate` counts every confirmed invoice, so it
+ * cannot be used here. Paid-only spend is apportioned through the very same
+ * pure `apportionSpend` function with the same mappings, so the split across
+ * shared packages is identical — only the input differs.
+ *
+ * SPEND IS APPORTIONED, never summed per line — a package mapped to several
+ * lines has its spend split between them by the pure engine's `apportionSpend`.
+ * Summing the package against each line counts one invoice several times over
+ * (non-negotiable #8).
+ *
+ * TWO DIFFERENT REMAINDERS, deliberately shown side by side:
+ *   leftToSpend = budget - spent   (how much allowance is unused)
+ *   leftToDraw  = budget - drawn   (how much the lender will still release)
+ * They differ whenever drawings run ahead of or behind cost, which is the
+ * thing worth watching.
  */
 export type BreakdownLine = {
   id: number
@@ -25,106 +40,89 @@ export type BreakdownLine = {
   section: "works" | "professional_fees"
   budget: number
   spent: number
-  /** Signed quotes not yet invoiced, attributed to this line. */
-  contracted: number
-  /** Owner allowances attributed to this line. */
-  allowed: number
-  /** budget - spent - contracted - allowed. Negative = heading over. */
-  left: number
+  /** Certified by the lender against this line. null where the schedule carries no allocation. */
+  drawn: number | null
+  leftToSpend: number
+  leftToDraw: number | null
   spentPct: number
-  committedPct: number
+  drawnPct: number | null
 }
 
 export type Breakdown = {
   lines: BreakdownLine[]
-  totals: { budget: number; spent: number; contracted: number; allowed: number; left: number }
-  /** Confirmed spend that maps to no funding line at all — real money, no home. */
+  totals: { budget: number; spent: number; drawn: number; leftToSpend: number; leftToDraw: number }
+  /** Facility-level figures, which are the reliable ones — per-line drawdown is only allocated on some lines. */
+  facility: { total: number; certified: number; leftToDraw: number }
+  /** Confirmed spend that still maps to no funding line. */
   unmappedSpend: number
-  /** Committed money that could not be attributed to a single line. */
-  unattributedCommitted: { label: string; amount: number; kind: "contracted" | "allowance" }[]
+  linesWithoutDrawdown: number
 }
-
-/**
- * Which funding line each supplier's remaining commitment belongs to, matched
- * on the line description. Deliberately explicit: a wrong guess here moves real
- * money onto the wrong trade, so anything not listed stays unattributed and is
- * shown separately.
- */
-const COMMITMENT_TO_LINE: { match: RegExp; line: RegExp; label: string }[] = [
-  { match: /harlequin/i,        line: /superstructure brickwork/i,        label: "Harlequin stonework" },
-  { match: /sherborne/i,        line: /superstructure brickwork/i,        label: "Sherborne Stone" },
-  { match: /marshisaacs/i,      line: /first fix plumbing/i,              label: "Marshisaacs plumbing" },
-  { match: /city plumbing/i,    line: /first fix plumbing/i,              label: "City Plumbing" },
-  { match: /rhys harvey/i,      line: /first fix electrical/i,            label: "Rhys Harvey electrical" },
-  { match: /mayflower/i,        line: /kitchen cabinets/i,                label: "Mayflower kitchens" },
-  { match: /EST-CARPENTER/i,    line: /second fix joinery/i,              label: "Carpenter allowance" },
-  { match: /EST-STAIRS/i,       line: /second fix joinery/i,              label: "Stairs allowance" },
-  { match: /EST-FLOORING/i,     line: /floor (finishes|coverings)|flooring/i, label: "Woodpecker flooring" },
-  { match: /EST-SOLAR/i,        line: /solar/i,                           label: "Solar allowance" },
-  { match: /EST-APPLIANCES/i,   line: /kitchen cabinets/i,                label: "Appliances allowance" },
-]
-
-/** Harlequin state their own remaining balance on every invoice; there is no quote row for it. */
-const HARLEQUIN_REMAINING = 17345.0
 
 export async function getBreakdown(projectId: number): Promise<Breakdown | null> {
   const c = await getFundingCommercial(projectId)
   if (!c) return null
 
-  // Remaining commitments: accepted quotes (drawn = greater of invoiced or paid)
-  // and owner allowances, kept distinct.
-  const { rows: quoteRows } = await pool.query(`
-    SELECT COALESCE(s.name, q.supplier_name_raw) AS sup, q.reference, q.status, SUM(q.net) AS quoted,
-           COALESCE((SELECT SUM(i.net) FROM invoices i
-                      WHERE i.supplier_id = q.supplier_id AND i.status = 'confirmed'), 0) AS invoiced
-      FROM quotes q LEFT JOIN suppliers s ON s.id = q.supplier_id
-     WHERE q.project_id = $1 AND q.status IN ('accepted','estimate')
-     GROUP BY 1, q.reference, q.status, q.supplier_id`, [projectId])
-
-  const commitments: { key: string; label: string; amount: number; kind: "contracted" | "allowance" }[] = []
-  const bySupplier = new Map<string, { quoted: number; invoiced: number }>()
-  for (const r of quoteRows) {
-    if (r.status === "estimate") {
-      commitments.push({ key: r.reference, label: r.reference, amount: Number(r.quoted), kind: "allowance" })
-    } else {
-      const g = bySupplier.get(r.sup) ?? { quoted: 0, invoiced: 0 }
-      g.quoted += Number(r.quoted)
-      g.invoiced = Number(r.invoiced) // same for every row of that supplier
-      bySupplier.set(r.sup, g)
-    }
-  }
-  for (const [sup, g] of bySupplier) {
-    const left = g.quoted - g.invoiced
-    if (left > 0.005) commitments.push({ key: sup, label: sup, amount: left, kind: "contracted" })
-  }
-  commitments.push({ key: "harlequin", label: "HARLEQUIN", amount: HARLEQUIN_REMAINING, kind: "contracted" })
-
-  const lines: BreakdownLine[] = c.lines.map((l) => ({
-    id: l.lineId, description: l.description, section: l.section,
-    budget: l.originalFundingBudget, spent: l.actualSpendToDate,
-    contracted: 0, allowed: 0, left: 0, spentPct: 0, committedPct: 0,
+  // Paid-only spend per package. Credits carry through negative, as everywhere.
+  const { rows: paidRows } = await pool.query(`
+    SELECT li.cost_package_id,
+           SUM(li.line_net * CASE
+                 WHEN i.payment_status = 'paid' THEN 1
+                 WHEN i.payment_status = 'part_paid' AND i.amount_paid IS NOT NULL AND i.gross > 0
+                   THEN (i.amount_paid / i.gross)
+                 WHEN i.transaction_type = 'credit' THEN 1
+                 ELSE 0 END) AS spend
+      FROM invoice_line_items li
+      JOIN invoices i ON i.id = li.invoice_id
+      JOIN cost_packages cp ON cp.id = li.cost_package_id
+     WHERE i.project_id = $1 AND i.status = 'confirmed'
+       AND li.cost_package_id IS NOT NULL AND cp.is_build_cost = true
+     GROUP BY li.cost_package_id`, [projectId])
+  const paidPackages: PackageSpendInput[] = paidRows.map((r: any) => ({
+    costPackageId: r.cost_package_id, actualSpend: Number(r.spend),
   }))
+  const lineInputs: FundingLineInput[] = c.lines.map((l) => ({
+    id: l.lineId, section: l.section, description: l.description, originalAmount: l.originalFundingBudget,
+  }))
+  const paid = apportionSpend(lineInputs, paidPackages, c.mappings)
+  const events = await getDrawdownEvents(c.budget.id)
+  const certified = events.reduce((s, e) => s + Number(e.certifiedTotal ?? 0), 0)
+  const headerFacility = Number(c.budget.amountToBorrow ?? 0)
+  const facilityTotal = headerFacility > 0 ? headerFacility : c.project.totalFundingBudget
 
-  const unattributed: Breakdown["unattributedCommitted"] = []
-  for (const cm of commitments) {
-    const rule = COMMITMENT_TO_LINE.find((r) => r.match.test(cm.key))
-    const target = rule ? lines.find((l) => rule.line.test(l.description)) : undefined
-    if (!target) { unattributed.push({ label: cm.label, amount: cm.amount, kind: cm.kind }); continue }
-    if (cm.kind === "contracted") target.contracted += cm.amount
-    else target.allowed += cm.amount
-  }
-
-  for (const l of lines) {
-    l.left = l.budget - l.spent - l.contracted - l.allowed
-    l.spentPct = l.budget > 0 ? (l.spent / l.budget) * 100 : l.spent > 0 ? 100 : 0
-    l.committedPct = l.budget > 0 ? ((l.spent + l.contracted + l.allowed) / l.budget) * 100 : 0
-  }
+  const lines: BreakdownLine[] = c.lines.map((l) => {
+    const drawn = l.fundingDrawn ?? null
+    const spentPaid = paid.byLine.get(l.lineId) ?? 0
+    return {
+      id: l.lineId,
+      description: l.description,
+      section: l.section,
+      budget: l.originalFundingBudget,
+      spent: spentPaid,
+      drawn,
+      leftToSpend: l.originalFundingBudget - spentPaid,
+      leftToDraw: drawn == null ? null : l.originalFundingBudget - drawn,
+      spentPct: l.originalFundingBudget > 0 ? (spentPaid / l.originalFundingBudget) * 100 : spentPaid > 0 ? 100 : 0,
+      drawnPct: drawn == null || l.originalFundingBudget <= 0 ? null : (drawn / l.originalFundingBudget) * 100,
+    }
+  })
   lines.sort((a, b) => b.budget - a.budget)
 
   const totals = lines.reduce(
-    (t, l) => ({ budget: t.budget + l.budget, spent: t.spent + l.spent, contracted: t.contracted + l.contracted,
-                 allowed: t.allowed + l.allowed, left: t.left + l.left }),
-    { budget: 0, spent: 0, contracted: 0, allowed: 0, left: 0 })
+    (t, l) => ({
+      budget: t.budget + l.budget,
+      spent: t.spent + l.spent,
+      drawn: t.drawn + (l.drawn ?? 0),
+      leftToSpend: t.leftToSpend + l.leftToSpend,
+      leftToDraw: t.leftToDraw + (l.leftToDraw ?? 0),
+    }),
+    { budget: 0, spent: 0, drawn: 0, leftToSpend: 0, leftToDraw: 0 },
+  )
 
-  return { lines, totals, unmappedSpend: c.unmappedSpend, unattributedCommitted: unattributed }
+  return {
+    lines,
+    totals,
+    facility: { total: facilityTotal, certified, leftToDraw: facilityTotal - certified },
+    unmappedSpend: paid.unmapped,
+    linesWithoutDrawdown: lines.filter((l) => l.drawn == null).length,
+  }
 }

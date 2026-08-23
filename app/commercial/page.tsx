@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/page-header"
 import { CommercialView } from "@/components/commercial-view"
 import { FundingVsActual } from "@/components/funding-vs-actual"
 import { QuotesVsActualView } from "@/components/quotes-vs-actual"
+import { CashPositionView } from "@/components/cash-position-view"
 import type {
   FundingLineDrillDownData,
   PackageBreakdown,
@@ -20,11 +21,12 @@ import {
   getQuotesVsActual,
 } from "@/lib/queries"
 import { getFundingCommercial, getDrawdownEvents, type DrawdownEvent } from "@/lib/funding/queries"
+import { getCashPosition } from "@/lib/funding/cash-position"
 import { apportionSpend, type FundingLineInput, type MappingInput } from "@/lib/funding/calculations"
 
 export const dynamic = "force-dynamic"
 
-type CommercialTab = "budget" | "funding" | "quotes"
+type CommercialTab = "budget" | "funding" | "quotes" | "cash"
 
 /**
  * Same classification `apportionSpend`'s internal share logic uses (single
@@ -48,7 +50,8 @@ export default async function CommercialPage({
 }) {
   const { project, view, line } = await searchParams
   const projects = await getProjectOptions()
-  const tab: CommercialTab = view === "funding" ? "funding" : view === "quotes" ? "quotes" : "budget"
+  const tab: CommercialTab =
+    view === "funding" ? "funding" : view === "quotes" ? "quotes" : view === "cash" ? "cash" : "budget"
 
   const selectedSlug = project ?? projects[0]?.slug ?? null
   const selected = selectedSlug ? await getProjectBySlug(selectedSlug) : null
@@ -63,6 +66,7 @@ export default async function CommercialPage({
   const funding = selected && tab === "funding" ? await getFundingCommercial(selected.id) : null
   const drawdownEvents: DrawdownEvent[] = funding ? await getDrawdownEvents(funding.budget.id) : []
   const quotesVsActual = selected && tab === "quotes" ? await getQuotesVsActual(selected.id) : null
+  const cashPosition = selected && tab === "cash" ? await getCashPosition(selected.id) : null
 
   const expandedLineId = tab === "funding" && line != null && line.trim() !== "" ? Number(line) : null
   let drilldown: FundingLineDrillDownData | null = null
@@ -181,10 +185,33 @@ export default async function CommercialPage({
           >
             Quotes
           </Link>
+          <Link
+            href={`/commercial?view=cash${selectedSlug ? `&project=${selectedSlug}` : ""}`}
+            role="tab"
+            aria-selected={tab === "cash"}
+            className={cn(
+              "flex min-h-10 items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              tab === "cash"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            Cash Position
+          </Link>
         </div>
       </div>
 
-      {tab === "quotes" ? (
+      {tab === "cash" ? (
+        <main className="flex flex-col gap-6 px-4 py-8 sm:px-8">
+          {cashPosition ? (
+            <CashPositionView p={cashPosition} />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No funding budget recorded for this project, so there is nothing to draw against.
+            </p>
+          )}
+        </main>
+      ) : tab === "quotes" ? (
         <main className="flex flex-col gap-6 px-4 py-8 sm:px-8">
           {projects.length > 1 ? (
             <div role="tablist" aria-label="Project" className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1">

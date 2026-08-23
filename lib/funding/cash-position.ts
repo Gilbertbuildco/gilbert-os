@@ -82,6 +82,15 @@ export type CashPosition = {
   unallocated: number
   owed: OwedSupplier[]
   drawdowns: DrawdownRow[]
+  /**
+   * Cash actually in the bank. Until a direct feed exists this is the owner's
+   * own reading — Xero's figure is NOT used, because it counts only money it
+   * has seen coded and therefore overstates by whatever sits unreconciled
+   * (£45,193.03 in Xero vs £10,560.19 in the account on 2026-08-23).
+   */
+  cash: { amount: number; source: string; asAt: string } | null
+  /** cash - what is owed. Negative = a drawdown is needed to settle the bills. */
+  cashAfterBills: number | null
 }
 
 export async function getCashPosition(projectId: number): Promise<CashPosition | null> {
@@ -155,6 +164,14 @@ export async function getCashPosition(projectId: number): Promise<CashPosition |
     .filter((r) => r.remaining > 0)
   const contracted = contractedBySupplier.reduce((s, r) => s + r.remaining, 0)
 
+  const { rows: [bal] } = await pool.query(`
+    SELECT b.amount, b.balance_type, to_char(b.fetched_at,'YYYY-MM-DD') AS as_at, c.provider
+      FROM bank_balances b JOIN bank_connections c ON c.id = b.connection_id
+     ORDER BY b.fetched_at DESC LIMIT 1`)
+  const cash = bal
+    ? { amount: Number(bal.amount), source: bal.provider === "manual" ? "read from the account" : bal.provider, asAt: bal.as_at }
+    : null
+
   const spentToDate = c.project.totalActualSpendAll
   const nonBuildSpend = c.nonBuildCostSpend
   const committed = spentToDate + outstandingNet
@@ -173,5 +190,7 @@ export async function getCashPosition(projectId: number): Promise<CashPosition |
     knownCost,
     unallocated: facility - knownCost,
     owed, drawdowns,
+    cash,
+    cashAfterBills: cash ? cash.amount - outstandingGross : null,
   }
 }

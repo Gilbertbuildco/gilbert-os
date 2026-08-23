@@ -40,6 +40,37 @@ export function CashPositionView({ p }: { p: CashPosition }) {
 
   return (
     <div className="flex flex-col gap-6">
+      {p.cash ? (
+        <div className={cn("rounded-lg border p-5",
+          (p.cashAfterBills ?? 0) < 0 ? "border-amber-500/40 bg-amber-500/5" : "border-emerald-500/40 bg-emerald-500/5")}>
+          <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
+            <div>
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Cash in the bank</div>
+              <div className="mt-1 text-3xl font-semibold tabular-nums">{money(p.cash.amount)}</div>
+              <div className="mt-1 text-xs text-muted-foreground">{p.cash.source} · {p.cash.asAt}</div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Bills to pay</div>
+              <div className="mt-1 text-3xl font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+                {money(p.outstandingGross)}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">{p.outstandingCount} invoices</div>
+            </div>
+          </div>
+          <p className="mt-4 border-t border-border/60 pt-3 text-sm">
+            {(p.cashAfterBills ?? 0) < 0 ? (
+              <>
+                Settling everything owed would leave you{" "}
+                <strong className="text-amber-600 dark:text-amber-400">{money(Math.abs(p.cashAfterBills ?? 0))} short</strong>
+                {" "}— so a drawdown is needed before the bills are cleared. {money(p.leftToDraw)} remains available.
+              </>
+            ) : (
+              <>Cash covers everything currently owed, with {money(p.cashAfterBills ?? 0)} to spare.</>
+            )}
+          </p>
+        </div>
+      ) : null}
+
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Left to draw" value={money(p.leftToDraw)} sub={`${money0(p.certifiedToDate)} drawn of ${money0(p.facility)}`} />
         <Stat label="Left to spend" value={money(p.leftToSpend)} sub={`${money0(p.committed)} committed`} />

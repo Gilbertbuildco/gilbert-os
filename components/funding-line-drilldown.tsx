@@ -152,6 +152,13 @@ export function FundingLineDrillDown({ data, closeHref }: Props) {
         />
       </div>
 
+      {/* "Drawn" and "left to draw" here are this line's own position against
+          the LENDER'S allocation for it (drawn events actually recorded
+          against this line; never a sum owed to or drawn from a supplier).
+          They are real, but partial: a line with no drawdown allocation shows
+          drawn as null rather than zero, so these per-line figures can't be
+          summed and compared against the single facility-wide "left to draw"
+          headline shown on Cash Position — that one is the reliable total. */}
       {line.fundingDrawn != null ? (
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

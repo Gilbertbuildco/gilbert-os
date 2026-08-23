@@ -81,6 +81,14 @@ export async function getPosition(projectId: number): Promise<Position | null> {
   const bySupplier = owedRows.map((r: any) => ({ supplier: r.supplier, total: Number(r.owed), count: r.n }))
 
   // Future payments: accepted quotes not yet drawn, plus the owner's allowances.
+  // Quote status semantics (same three that matter everywhere quotes are read):
+  //   'accepted'     a real supplier document exists -> origin "quote" below.
+  //   'estimate'     the owner's own allowance, no supplier document ->
+  //                  origin "owner" below; never presented as a supplier quote.
+  //   'buyer_funded' accepted by a supplier but paid for by the plot buyer,
+  //                  not Gilbert Build Co -> deliberately excluded by the
+  //                  `status IN ('accepted','estimate')` filter, same as
+  //                  'not_accepted', 'open' and 'superseded'.
   const { rows: qRows } = await pool.query(`
     SELECT COALESCE(s.name, q.supplier_name_raw) AS sup, q.status, SUM(q.net) AS quoted,
            -- Owner allowances are itemised individually; a placeholder supplier

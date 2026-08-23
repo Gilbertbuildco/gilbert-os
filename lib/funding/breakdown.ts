@@ -40,7 +40,16 @@ export type BreakdownLine = {
   section: "works" | "professional_fees"
   budget: number
   spent: number
-  /** Certified by the lender against this line. null where the schedule carries no allocation. */
+  /**
+   * Certified by the lender against this line, from `funding_drawdowns`
+   * (the per-line rollup table) — a DIFFERENT source from `facility.certified`
+   * below, which sums `funding_drawdown_events.certifiedTotal` (the
+   * facility-wide matrix, including deliberately-unallocated adjustment
+   * events such as the -£560 VAT correction — non-negotiable #2/#3). The two
+   * totals are close but not required to reconcile exactly for that reason;
+   * do not assume summing this column across all lines equals
+   * `facility.certified`. null where the schedule carries no allocation.
+   */
   drawn: number | null
   leftToSpend: number
   leftToDraw: number | null
@@ -71,7 +80,7 @@ export type Breakdown = {
     /** received - paidOut. Negative = more has left the account than the lender has released. */
     net: number
   }
-  /** Confirmed spend that still maps to no funding line. */
+  /** PAID spend (the same paid-only measure as `spent` above) that still maps to no funding line. */
   unmappedSpend: number
   linesWithoutDrawdown: number
 }

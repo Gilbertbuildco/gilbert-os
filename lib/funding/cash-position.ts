@@ -24,6 +24,14 @@ import { getDrawdownEvents, getFundingCommercial } from "./queries"
  *    that as a predicted shortfall implies knowledge of the cost to complete
  *    that does not exist. It is labelled for what it is.
  *
+ * 4. SPEND MEASURE. `spentToDate` (= `project.totalActualSpendAll`) counts
+ *    every CONFIRMED invoice regardless of payment status — an accrual total,
+ *    not cash paid. `breakdown.ts` uses the opposite measure (PAID invoices
+ *    only, apportioned per funding line) because it answers a different
+ *    question — money that has actually left the account. The two are not
+ *    interchangeable; see the type comment on `spentToDate` and `committed`
+ *    below for how that plays out here.
+ *
  * THE ACTUAL FORECAST is built in tiers of decreasing certainty, never blended:
  *   committed  invoiced + owed .......................... hard fact
  *   contracted accepted quotes not yet invoiced ......... signed, unbilled
@@ -56,6 +64,15 @@ export type CashPosition = {
   directPayments: number
   cashReceived: number
   leftToDraw: number
+  /**
+   * `project.totalActualSpendAll` — every CONFIRMED invoice's net, whether
+   * paid or not (accrual, not cash). This is a deliberately different measure
+   * from `breakdown.ts`'s `spent`, which counts PAID invoices only: this
+   * figure answers "what has Gilbert Build Co committed to by invoice", the
+   * Breakdown page answers "what has actually left the account". Because it
+   * already includes unpaid invoices in full, `outstandingNet` below is NOT
+   * additional spend on top of this — see the note on `committed`.
+   */
   spentToDate: number
   /**
    * Confirmed spend on packages flagged is_build_cost = false (legal & broker
@@ -64,12 +81,27 @@ export type CashPosition = {
    * rather than hidden.
    */
   nonBuildSpend: number
+  /** Net portion still owing on confirmed unpaid/part-paid invoices — already counted once inside `spentToDate` above (accrual includes unpaid invoices in full). */
   outstandingNet: number
   outstandingGross: number
   outstandingCount: number
+  /**
+   * spentToDate + outstandingNet. NOTE FOR THE NEXT READER: because
+   * `spentToDate` is accrual (every confirmed invoice, paid or not) and
+   * `outstandingNet` is the unpaid portion of those SAME invoices, this sum
+   * re-adds the unpaid amount on top of a total that already contains it —
+   * it is not simply "paid + still owed". Flagging here rather than changing
+   * the arithmetic (non-negotiable #5: flag, never fix); confirm the intended
+   * definition of "committed" with the owner before relying on this figure.
+   */
+  /** Every confirmed invoice, net, paid or not. What is owed is a subset of this. */
   committed: number
   leftToSpend: number
-  /** certified − committed. Positive = drawn ahead of cost. NOT a forecast. */
+  /**
+   * certified − committed. Positive = drawn ahead of cost incurred. NOT a
+   * forecast, and NOT cash in hand: see the Breakdown page's reconciliation for
+   * the like-for-like cash comparison.
+   */
   drawnAheadOfCost: number
   drawnPct: number
   committedPct: number
@@ -145,8 +177,17 @@ export async function getCashPosition(projectId: number): Promise<CashPosition |
   const outstandingGross = owed.reduce((s, o) => s + o.total, 0)
   const outstandingNet = owed.reduce((s, o) => s + o.totalNet, 0)
 
-  // Accepted quotes only (owner rule 2026-08-14). A supplier already invoiced
-  // beyond its quote has no remaining contracted work — never a negative.
+  // Accepted quotes only (owner rule 2026-08-14). Quote status semantics:
+  //   'accepted'     a real supplier document exists — counts as contracted.
+  //   'estimate'     the owner's own allowance, no supplier document — must
+  //                  NEVER be counted here as contracted (non-negotiable #1).
+  //   'buyer_funded' accepted by a supplier but paid for by the plot buyer,
+  //                  not Gilbert Build Co — excluded from our cost.
+  //   'not_accepted' / 'open' / 'superseded' — not yet or no longer live.
+  // The `status = 'accepted'` filter below excludes all of the above by
+  // construction; each is a deliberate exclusion, not an oversight.
+  // A supplier already invoiced beyond its quote has no remaining contracted
+  // work — never a negative.
   const { rows: qrows } = await pool.query(`
     SELECT COALESCE(s.name, q.supplier_name_raw) AS supplier,
            SUM(COALESCE(q.net, q.gross, 0)) AS quoted,
@@ -174,7 +215,15 @@ export async function getCashPosition(projectId: number): Promise<CashPosition |
 
   const spentToDate = c.project.totalActualSpendAll
   const nonBuildSpend = c.nonBuildCostSpend
-  const committed = spentToDate + outstandingNet
+  /**
+   * `spentToDate` is EVERY confirmed invoice's net, whatever its payment status
+   * — an unpaid invoice is already inside it. Adding `outstandingNet` on top
+   * therefore counted the unpaid portion twice, inflating committed by
+   * £88,863.06 and flowing on into leftToSpend, drawnAheadOfCost, knownCost and
+   * unallocated. Committed IS everything invoiced; what is still owed is a
+   * subset of it, not an addition to it.
+   */
+  const committed = spentToDate
   const knownCost = committed + contracted
 
   return {

@@ -181,6 +181,16 @@ export async function getDrawdownEvents(budgetId: number): Promise<DrawdownEvent
  * but not construction cost (e.g. "Legal & broker fees") must never enter
  * that apportionment. Excluding it here is a data/query decision only; the
  * pure engine in lib/funding/calculations.ts is never touched.
+ *
+ * SPEND MEASURE: every CONFIRMED invoice's line, regardless of payment
+ * status (`WHERE inv.status = 'confirmed'` — no `payment_status` filter).
+ * This is deliberately the opposite measure from `breakdown.ts`, which
+ * apportions PAID-only spend through this same `apportionSpend` function
+ * with the same mappings. Confirmed-vs-paid is the whole difference between
+ * the two call sites; do not use this function where paid-only cash cost is
+ * required (the Breakdown page), and do not use `breakdown.ts`'s paid query
+ * where accrual actual-spend-vs-budget is required (this one, via
+ * `getFundingCommercial` -> `computeProject.totalActualSpendMapped`).
  */
 export async function getPackageSpend(projectId: number): Promise<PackageSpendInput[]> {
   const rows = await db.execute(sql`
@@ -206,6 +216,13 @@ export async function getPackageSpend(projectId: number): Promise<PackageSpendIn
  * a legal/broker fee is not funded by the lender as build cost, so it must
  * never count against that budget. Excluded spend is never lost — it is
  * exposed separately by `getProjectNonBuildCostSpend`.
+ *
+ * SPEND MEASURE: CONFIRMED, not paid-only — same accrual basis as
+ * `getPackageSpend` above (no `payment_status` filter), and for the same
+ * reason: this feeds a budget-vs-actual-cost comparison, not a cash-moved
+ * comparison. `lib/funding/breakdown.ts` and `lib/funding/cash-position.ts`
+ * each document where they diverge from this measure — read those before
+ * reusing this figure for anything cash-related.
  */
 export async function getProjectActualSpend(projectId: number): Promise<number> {
   const rows = await db.execute(sql`

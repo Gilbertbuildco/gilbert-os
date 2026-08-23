@@ -97,6 +97,10 @@ export function FundingVsActual({
       render: (l) => formatGBP(l.originalFundingBudget, { decimals: true }),
     },
     {
+      // This is invoiced spend on mapped cost packages (every confirmed invoice
+      // line, paid or not) apportioned across funding lines — not cash paid out.
+      // It is a different, broader measure than "Spent" on the Breakdown tab,
+      // which counts paid invoices only. Never quote this figure as paid.
       key: "actualSpendToDate",
       header: "Actual spend to date",
       align: "right",
@@ -131,6 +135,14 @@ export function FundingVsActual({
         ),
     },
     {
+      // "Drawn" always means drawn from the lender's facility, never from a
+      // supplier — this is the line's own position against the drawdown
+      // events actually allocated to it (see DrawdownTimeline below), not a
+      // computed apportionment. It's real but partial: some lines carry no
+      // drawdown allocation at all, so this column and "Left to draw" next to
+      // it can't be summed and read as the facility's true undrawn balance —
+      // that single figure lives on Cash Position, drawn from the facility
+      // total, never apportioned per line or per trade.
       key: "fundingDrawn",
       header: "Funding drawn",
       align: "right",

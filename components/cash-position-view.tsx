@@ -85,12 +85,12 @@ export function CashPositionView({ p }: { p: CashPosition }) {
           Each tier is a different kind of certainty. Nothing here is estimated.
         </p>
         <div className="mt-4 space-y-3">
-          <Bar label="Invoiced + owed" pct={p.committedPct} amount={p.committed} total={p.facility} className="bg-violet-500" />
+          <Bar label="Invoiced (paid and unpaid)" pct={p.committedPct} amount={p.committed} total={p.facility} className="bg-violet-500" />
           <Bar label="+ accepted quotes not yet billed" pct={knownPct} amount={p.knownCost} total={p.facility} className="bg-sky-500" />
           <Bar label="Drawn from the facility" pct={p.drawnPct} amount={p.certifiedToDate} total={p.facility} className="bg-emerald-500" />
         </div>
         <dl className="mt-5 grid gap-3 text-sm sm:grid-cols-3">
-          <div><dt className="text-muted-foreground">Committed (hard)</dt><dd className="tabular-nums font-medium">{money(p.committed)}</dd></div>
+          <div><dt className="text-muted-foreground">Invoiced to date</dt><dd className="tabular-nums font-medium">{money(p.committed)}</dd></div>
           <div><dt className="text-muted-foreground">Contracted, unbilled</dt><dd className="tabular-nums font-medium">{money(p.contracted)}</dd></div>
           <div><dt className="text-muted-foreground">Budget not yet spent or quoted</dt><dd className="tabular-nums font-medium">{money(p.unallocated)}</dd></div>
         </dl>

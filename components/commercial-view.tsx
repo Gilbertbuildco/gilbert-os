@@ -37,6 +37,11 @@ export function CommercialView({ projects, selectedSlug, packages, lineItems }: 
   const buildPackages = packages.filter((p) => p.isBuildCost !== false)
   const nonBuildPackages = packages.filter((p) => p.isBuildCost === false)
   const totalBudget = buildPackages.reduce((s, p) => s + (p.originalBudget ?? 0), 0)
+  // "Committed" sums every confirmed invoice line regardless of payment_status —
+  // it is money invoiced, not money paid. That makes it a broader measure than
+  // "Spent" on the Breakdown tab, which counts paid invoices only. An unpaid
+  // invoice sits inside Committed here and, separately, as a liability on Cash
+  // Position — never read the two figures as the same thing.
   const totalCommitted = buildPackages.reduce((s, p) => s + p.committed, 0)
   const nonBuildCommitted = nonBuildPackages.reduce((s, p) => s + p.committed, 0)
   const variance = totalBudget - totalCommitted

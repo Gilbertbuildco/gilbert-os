@@ -510,8 +510,16 @@ export const xeroAccountMap = pgTable("xero_account_map", {
  * (kept there, not duplicated here, so there is one place to read it).
  *
  * As with every table in this schema, there is no DB-level FK or CHECK
- * constraint — `supplierId`/`projectId` references and the `status` enum
- * ('accepted' | 'superseded' | 'open') are validated in application code.
+ * constraint — `supplierId`/`projectId` references and the `status` enum are
+ * validated in application code. Six statuses are live, and the distinction
+ * between the first two carries real weight:
+ *   'accepted'     a supplier document exists and the work is committed
+ *   'estimate'     an OWNER ALLOWANCE with no supplier document — must never
+ *                  be totalled as though it were quoted or contracted
+ *   'buyer_funded' accepted, but paid by the buyer, so not our cost
+ *   'not_accepted' quoted and declined
+ *   'open'         quoted, no decision yet
+ *   'superseded'   replaced by a later revision
  * Deliberately no unique index: unlike invoices, the same supplier can
  * legitimately issue multiple quotes sharing a reference (alternate spec
  * options, revisions) — duplicate handling is an app-level judgement, not a

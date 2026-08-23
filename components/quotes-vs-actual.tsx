@@ -90,6 +90,12 @@ export function QuotesVsActualView({ data, projectSelected }: Props) {
     quotesBySupplier.set(key, list)
   }
 
+  // quotedTotal (and everything summed from it below) already excludes owner
+  // allowances — getQuotesVsActual only sums status = 'accepted' quotes. An
+  // owner's own figure (status 'estimate', no supplier document) must never
+  // read as a genuine trade quote, so it is deliberately left out of this
+  // total; see QuoteStatusBadge below for how such a row still appears in the
+  // per-supplier quote list without being badged as accepted or contracted.
   const totalQuoted = matched.reduce((s, r) => s + r.quotedTotal, 0)
   const totalActual = matched.reduce((s, r) => s + r.actualNet, 0)
   const totalRemaining = totalQuoted - totalActual
@@ -362,6 +368,14 @@ function QuotesList({ quotes }: { quotes: QuoteDrillDownRow[] }) {
   )
 }
 
+/**
+ * status = 'estimate' is an owner allowance, not a supplier quote — it falls
+ * through to "Unknown status" here rather than getting its own badge, which
+ * is deliberate: the point is that it must never render as "Accepted" (or
+ * anything implying a trade quoted or contracted this figure). It still
+ * appears in the quote list below by amount and reference, just never
+ * counted in quotedTotal above and never dressed up as a real quote.
+ */
 function QuoteStatusBadge({ status }: { status: string | null }) {
   if (status === "accepted") {
     return (

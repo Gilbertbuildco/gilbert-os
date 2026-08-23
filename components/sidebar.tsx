@@ -41,6 +41,7 @@ export function Sidebar({ reviewCount = 0 }: Props) {
 
   const navItems = [
     { label: "Dashboard", href: "/", icon: LayoutDashboard },
+    { label: "Position", href: "/position", icon: Wallet },
     { label: "Projects", href: "/projects", icon: Building2 },
     { label: "Commercial", href: "/commercial", icon: Wallet },
     { label: "Procurement", href: "/procurement", icon: Truck },

@@ -45,6 +45,24 @@ export type Position = {
   noPriceYet: { description: string; budget: number }[]
   /** cash + leftToDraw − owedNow − future. */
   headroom: number
+  /**
+   * Where the build cost stands against the lender's budget once everything
+   * currently owed is paid. Measured ex-VAT throughout, because the lender's
+   * schedule is ex-VAT — `owedNow.total` above is gross, since that is what
+   * leaves the bank.
+   */
+  budgetAfterOwed: {
+    budget: number
+    /** Build cost actually paid out to date. */
+    paid: number
+    /** The ex-VAT value of what is owed. */
+    owedNet: number
+    /** paid + owedNet — where cost lands once the current bills are settled. */
+    thenSpent: number
+    /** budget − thenSpent. Negative = over the lender's allowance. */
+    thenLeft: number
+    thenPct: number
+  }
 }
 
 /**
@@ -153,6 +171,28 @@ export async function getPosition(projectId: number): Promise<Position | null> {
   const owedTotal = bySupplier.reduce((s, o) => s + o.total, 0)
   const leftToDraw = facilityTotal - certified
 
+  // Build cost paid to date, and the ex-VAT value of what is still owed, so the
+  // two can be added and compared with the lender's ex-VAT budget.
+  const { rows: [spendRow] } = await pool.query(`
+    SELECT COALESCE(SUM(li.line_net * CASE
+             WHEN i.payment_status = 'paid' THEN 1
+             WHEN i.payment_status = 'part_paid' AND i.amount_paid IS NOT NULL AND i.gross > 0
+               THEN (i.amount_paid / i.gross)
+             WHEN i.transaction_type = 'credit' THEN 1 ELSE 0 END), 0) AS paid,
+           COALESCE(SUM(li.line_net * CASE
+             WHEN i.payment_status = 'unpaid' THEN 1
+             WHEN i.payment_status = 'part_paid' AND i.amount_paid IS NOT NULL AND i.gross > 0
+               THEN 1 - (i.amount_paid / i.gross)
+             ELSE 0 END), 0) AS owed_net
+      FROM invoice_line_items li
+      JOIN invoices i ON i.id = li.invoice_id
+      JOIN cost_packages cp ON cp.id = li.cost_package_id
+     WHERE i.status = 'confirmed' AND cp.is_build_cost = true`)
+  const paidToDate = Number(spendRow.paid)
+  const owedNetBuild = Number(spendRow.owed_net)
+  const thenSpent = paidToDate + owedNetBuild
+  const budget = c.project.totalFundingBudget
+
   return {
     cash,
     owedNow: { total: owedTotal, count: owedRows.reduce((s: number, r: any) => s + r.n, 0), bySupplier },
@@ -161,6 +201,14 @@ export async function getPosition(projectId: number): Promise<Position | null> {
     future: { total: fromQuotes + fromOwner, fromQuotes, fromOwner, items },
     noPriceYet,
     headroom: (cash?.amount ?? 0) + leftToDraw - owedTotal - (fromQuotes + fromOwner),
+    budgetAfterOwed: {
+      budget,
+      paid: paidToDate,
+      owedNet: owedNetBuild,
+      thenSpent,
+      thenLeft: budget - thenSpent,
+      thenPct: budget > 0 ? (thenSpent / budget) * 100 : 0,
+    },
   }
 }
 

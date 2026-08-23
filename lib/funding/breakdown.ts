@@ -1,6 +1,7 @@
 import "server-only"
 import { pool } from "../db"
 import { apportionSpend, type FundingLineInput, type PackageSpendInput } from "./calculations"
+import { applyLineGroups } from "./line-groups"
 import { getDrawdownEvents, getFundingCommercial } from "./queries"
 
 /**
@@ -132,7 +133,16 @@ export async function getBreakdown(projectId: number): Promise<Breakdown | null>
       drawnPct: drawn == null || l.originalFundingBudget <= 0 ? null : (drawn / l.originalFundingBudget) * 100,
     }
   })
-  lines.sort((a, b) => b.budget - a.budget)
+  // Present first/second fix plumbing and electrical as one line each. The
+  // lender's own rows are untouched in the database and on the Goldentree tab.
+  const grouped = applyLineGroups(lines, ["budget", "spent", "drawn", "leftToSpend", "leftToDraw"])
+  for (const l of grouped) {
+    l.spentPct = l.budget > 0 ? (l.spent / l.budget) * 100 : l.spent > 0 ? 100 : 0
+    l.drawnPct = l.drawn == null || l.budget <= 0 ? null : (l.drawn / l.budget) * 100
+  }
+  grouped.sort((a, b) => b.budget - a.budget)
+  lines.length = 0
+  lines.push(...grouped)
 
   const totals = lines.reduce(
     (t, l) => ({

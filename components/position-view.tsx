@@ -52,6 +52,37 @@ export function PositionView({ p }: { p: Position }) {
         </dl>
       </div>
 
+      {/* Where cost lands once the current bills are settled. Ex-VAT, because the
+          lender's budget is — the gross figure above is what leaves the bank. */}
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-sm font-semibold">Once what you owe is paid</h2>
+          <span className="text-xs text-muted-foreground">ex-VAT, against the lender&rsquo;s budget</span>
+        </div>
+        <div className="mt-3 h-3 w-full overflow-hidden rounded-full bg-muted">
+          <div className="flex h-full">
+            <div className="h-full bg-violet-500" style={{ width: `${Math.min(100, (p.budgetAfterOwed.paid / p.budgetAfterOwed.budget) * 100)}%` }} />
+            <div className="h-full bg-amber-400" style={{ width: `${Math.min(100, (p.budgetAfterOwed.owedNet / p.budgetAfterOwed.budget) * 100)}%` }} />
+          </div>
+        </div>
+        <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-4">
+          <div><dt className="text-muted-foreground">Paid so far</dt><dd className="tabular-nums font-medium">{money(p.budgetAfterOwed.paid)}</dd></div>
+          <div><dt className="text-muted-foreground">Plus owed</dt><dd className="tabular-nums font-medium">{money(p.budgetAfterOwed.owedNet)}</dd></div>
+          <div><dt className="text-muted-foreground">Spend would be</dt><dd className="tabular-nums font-medium">{money(p.budgetAfterOwed.thenSpent)}</dd></div>
+          <div>
+            <dt className="text-muted-foreground">Left of budget</dt>
+            <dd className={cn("tabular-nums font-semibold", p.budgetAfterOwed.thenLeft < 0 && "text-red-600 dark:text-red-400")}>
+              {money(p.budgetAfterOwed.thenLeft)}
+            </dd>
+          </div>
+        </dl>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Settling everything owed puts build cost at{" "}
+          <strong className="text-foreground">{p.budgetAfterOwed.thenPct.toFixed(1)}%</strong> of the lender&rsquo;s
+          budget, leaving {money(p.budgetAfterOwed.thenLeft)} of allowance.
+        </p>
+      </div>
+
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-lg border border-border bg-card">
           <div className="flex items-baseline justify-between border-b border-border px-5 py-3">

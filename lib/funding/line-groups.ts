@@ -64,3 +64,42 @@ export function applyLineGroups<T extends { lineId?: number; id?: number; descri
   }
   return out
 }
+
+
+/**
+ * Categories the owner tracks that Goldentree's schedule does not contain.
+ *
+ * These are appended to Funding vs Actual ONLY. They are deliberately not rows
+ * in `funding_budget_lines`, because the Goldentree tab reads that table to
+ * mirror the lender's document — adding them there would put lines on their
+ * schedule that they never issued (non-negotiable #2).
+ *
+ * Spend is drawn from cost packages that reach no lender line, which is exactly
+ * the money that was previously stranded as "unmapped".
+ */
+export type ExtraCategory = {
+  key: string
+  description: string
+  /** null = never budgeted. The UI shows an unbudgeted line in red. */
+  budget: number | null
+  /** cost_packages.code whose spend belongs here. */
+  packageCodes: string[]
+  note: string
+}
+
+export const EXTRA_CATEGORIES: ExtraCategory[] = [
+  {
+    key: "professional-fees",
+    description: "Professional fees (site management)",
+    budget: 120000,
+    packageCodes: ["27"],
+    note: "£6,000 a month each for the owner and George Wilson. The owner's share was previously recorded as a dividend; owner decision 2026-08-23 is that it is a build cost funded from drawdowns, while remaining a dividend for tax — his accountant's call, not settled here.",
+  },
+  {
+    key: "additional-brickwork",
+    description: "Additional brickworks",
+    budget: null,
+    packageCodes: ["29"],
+    note: "Harlequin garages, measured at £48/m² as they are built, plus E/O works. No lender allowance exists for any of it.",
+  },
+]

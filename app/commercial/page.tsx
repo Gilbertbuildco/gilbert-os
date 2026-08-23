@@ -21,7 +21,8 @@ import {
 import { getFundingCommercial, getDrawdownEvents, type DrawdownEvent } from "@/lib/funding/queries"
 import { getCashPosition } from "@/lib/funding/cash-position"
 import { getGoldentreeSchedule } from "@/lib/funding/goldentree"
-import { applyLineGroups } from "@/lib/funding/line-groups"
+import { applyLineGroups, EXTRA_CATEGORIES } from "@/lib/funding/line-groups"
+import { getExtraCategorySpend } from "@/lib/funding/extra-categories"
 import { apportionSpend, type FundingLineInput, type MappingInput } from "@/lib/funding/calculations"
 
 export const dynamic = "force-dynamic"
@@ -68,13 +69,33 @@ export default async function CommercialPage({
    * lender's document, are untouched (non-negotiable #2). Drill-down still
    * targets a real line id, so expanding a grouped row opens its first member.
    */
+  // Categories the owner tracks that the lender's schedule does not carry.
+  // Appended here, never written to funding_budget_lines, so the Goldentree tab
+  // continues to mirror their document exactly.
+  const extraSpend = fundingRaw ? await getExtraCategorySpend(selected!.id) : new Map<string, number>()
+  const extraLines = fundingRaw
+    ? EXTRA_CATEGORIES.map((e, i) => {
+        const spent = extraSpend.get(e.key) ?? 0
+        const budget = e.budget ?? 0
+        return {
+          lineId: -1 - i, section: "professional_fees" as const, description: e.description,
+          originalFundingBudget: budget, actualSpendToDate: spent, committedCost: spent,
+          varianceAmount: budget - spent, variancePct: budget > 0 ? ((budget - spent) / budget) * 100 : null,
+          favourable: budget - spent >= 0, forecastCostToComplete: 0, hasForecast: false,
+          forecastFinalCost: spent, forecastFinalVariance: budget - spent,
+          workCompletePct: null, fundingEarned: null, fundingCertified: null, fundingDrawn: null,
+          fundingRemaining: null, amountSpentNotYetFunded: null, amountFundedAheadOfCost: null,
+        }
+      })
+    : []
+
   const funding = fundingRaw
-    ? { ...fundingRaw, lines: applyLineGroups(fundingRaw.lines, [
+    ? { ...fundingRaw, lines: [...applyLineGroups(fundingRaw.lines, [
         "originalFundingBudget", "actualSpendToDate", "committedCost", "varianceAmount",
         "forecastCostToComplete", "forecastFinalCost", "forecastFinalVariance",
         "fundingEarned", "fundingCertified", "fundingDrawn", "fundingRemaining",
         "amountSpentNotYetFunded", "amountFundedAheadOfCost",
-      ]) }
+      ]), ...extraLines] }
     : null
   const drawdownEvents: DrawdownEvent[] = funding ? await getDrawdownEvents(funding.budget.id) : []
   const quotesVsActual = selected && tab === "quotes" ? await getQuotesVsActual(selected.id) : null

@@ -48,21 +48,11 @@ export type Position = {
 }
 
 /**
- * Harlequin state a remaining balance per plot on every invoice; there is no
- * quote row for them.
- *
- * THIS IS THE PLOT CONTRACTS ONLY. They also bill garages, measured per m2 as
- * they are built (£48/m2), and E/O works — neither sits in any contract sum, so
- * neither can be counted here. Plot 1's garage has not been billed at all yet.
- * The true remaining figure is therefore HIGHER than this by whatever the
- * garages and extras come to, and the detail says so rather than implying this
- * is their whole account.
+ * Cost packages billed OUTSIDE a trade's contract sum. Spend here must not
+ * count against the quote, or a garage measured at £48/m² would look as though
+ * it consumed the stonework contract.
  */
-const HARLEQUIN = {
-  supplier: "HARLEQUIN",
-  amount: 17345.0,
-  detail: "Plot 2 £7,660 + Plot 3 £9,685 per invoice 07. Plot contracts only — garages (£48/m², Plot 1's not yet billed) and E/O works are extra",
-}
+const OUTSIDE_CONTRACT_CODES = ["29"]
 
 export async function getPosition(projectId: number): Promise<Position | null> {
   const c = await getFundingCommercial(projectId)
@@ -112,6 +102,18 @@ export async function getPosition(projectId: number): Promise<Position | null> {
   const paidBy = new Map<string, number>()
   for (const r of paidRows) paidBy.set(String(r.supplier), Math.max(paidBy.get(String(r.supplier)) ?? 0, Number(r.paid_net)))
 
+  // Spend billed outside the contract sum, per supplier, so it can be taken off
+  // "paid against the quote" — garages and E/O works are not contract draws.
+  const { rows: outsideRows } = await pool.query(`
+    SELECT s.name AS supplier, COALESCE(SUM(li.line_net), 0) AS outside
+      FROM invoice_line_items li
+      JOIN invoices i ON i.id = li.invoice_id
+      JOIN suppliers s ON s.id = i.supplier_id
+      JOIN cost_packages cp ON cp.id = li.cost_package_id
+     WHERE i.status = 'confirmed' AND cp.code = ANY($1)
+     GROUP BY 1`, [OUTSIDE_CONTRACT_CODES])
+  const outsideBy = new Map<string, number>(outsideRows.map((r: any) => [String(r.supplier), Number(r.outside)]))
+
   const items: FuturePayment[] = []
   for (const r of qRows) {
     if (r.status === "estimate") {
@@ -119,13 +121,14 @@ export async function getPosition(projectId: number): Promise<Position | null> {
       items.push({ supplier: label, amount: Number(r.quoted), origin: "owner", detail: "figure you gave me — no supplier document" })
       continue
     }
-    const paid = Math.max(Number(r.invoiced), paidBy.get(r.sup) ?? 0)
+    const outside = outsideBy.get(String(r.sup)) ?? 0
+    const paid = Math.max(Number(r.invoiced), paidBy.get(r.sup) ?? 0) - outside
     const left = Number(r.quoted) - paid
     if (left > 0.005)
       items.push({ supplier: r.sup, amount: left, origin: "quote",
-        detail: `accepted quote ${fmt(Number(r.quoted))}, ${fmt(paid)} already paid` })
+        detail: `accepted quote ${fmt(Number(r.quoted))}, ${fmt(paid)} already paid` +
+          (outside > 0 ? ` · ${fmt(outside)} of extras billed outside the contract` : "") })
   }
-  items.push({ supplier: HARLEQUIN.supplier, amount: HARLEQUIN.amount, origin: "quote", detail: HARLEQUIN.detail })
   items.sort((a, b) => b.amount - a.amount)
 
   const fromQuotes = items.filter((i) => i.origin === "quote").reduce((s, i) => s + i.amount, 0)

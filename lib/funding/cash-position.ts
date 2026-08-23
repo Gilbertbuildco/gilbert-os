@@ -57,6 +57,13 @@ export type CashPosition = {
   cashReceived: number
   leftToDraw: number
   spentToDate: number
+  /**
+   * Confirmed spend on packages flagged is_build_cost = false (legal & broker
+   * fees, vehicles). Excluded from spentToDate because the lender's budget does
+   * not cover it — but it is real money out of the account, so it is reported
+   * rather than hidden.
+   */
+  nonBuildSpend: number
   outstandingNet: number
   outstandingGross: number
   outstandingCount: number
@@ -149,13 +156,14 @@ export async function getCashPosition(projectId: number): Promise<CashPosition |
   const contracted = contractedBySupplier.reduce((s, r) => s + r.remaining, 0)
 
   const spentToDate = c.project.totalActualSpendAll
+  const nonBuildSpend = c.nonBuildCostSpend
   const committed = spentToDate + outstandingNet
   const knownCost = committed + contracted
 
   return {
     facility, fundingBudget, certifiedToDate, directPayments, cashReceived,
     leftToDraw: facility - certifiedToDate,
-    spentToDate, outstandingNet, outstandingGross, outstandingCount: rows.length,
+    spentToDate, nonBuildSpend, outstandingNet, outstandingGross, outstandingCount: rows.length,
     committed,
     leftToSpend: fundingBudget - committed,
     drawnAheadOfCost: certifiedToDate - committed,

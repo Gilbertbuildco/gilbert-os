@@ -44,7 +44,7 @@ export function CashPositionView({ p }: { p: CashPosition }) {
         <Stat label="Left to draw" value={money(p.leftToDraw)} sub={`${money0(p.certifiedToDate)} drawn of ${money0(p.facility)}`} />
         <Stat label="Left to spend" value={money(p.leftToSpend)} sub={`${money0(p.committed)} committed`} />
         <Stat label="Outstanding" value={money(p.outstandingGross)} sub={`${p.outstandingCount} invoices · ${money0(p.outstandingNet)} ex-VAT`} tone="bad" />
-        <Stat label="Spent to date" value={money(p.spentToDate)} sub="confirmed invoices, ex-VAT" />
+        <Stat label="Spent to date" value={money(p.spentToDate)} sub={`ex-VAT${p.nonBuildSpend > 0 ? ` · plus ${money0(p.nonBuildSpend)} non-build` : ""}`} />
       </div>
 
       {/* Where the money will end up, in tiers of decreasing certainty. */}
@@ -63,6 +63,13 @@ export function CashPositionView({ p }: { p: CashPosition }) {
           <div><dt className="text-muted-foreground">Contracted, unbilled</dt><dd className="tabular-nums font-medium">{money(p.contracted)}</dd></div>
           <div><dt className="text-muted-foreground">Budget not yet spent or quoted</dt><dd className="tabular-nums font-medium">{money(p.unallocated)}</dd></div>
         </dl>
+        {p.nonBuildSpend > 0 ? (
+          <p className="mt-3 text-xs text-muted-foreground">
+            A further <strong className="text-foreground">{money(p.nonBuildSpend)}</strong> has been spent on costs the
+            lender&apos;s budget does not cover — legal and broker fees, vehicles. Real money out, but deliberately outside
+            every figure above.
+          </p>
+        ) : null}
         <p className="mt-4 rounded-md bg-muted/50 p-3 text-xs text-muted-foreground">
           <strong className="text-foreground">{money(p.unallocated)}</strong> of the facility covers work with neither an
           invoice nor an accepted quote against it. That figure is the lender&apos;s own allowance — not a forecast of what

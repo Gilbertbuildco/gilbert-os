@@ -47,8 +47,22 @@ export type Position = {
   headroom: number
 }
 
-/** Harlequin state a remaining balance per plot on every invoice; there is no quote row for it. */
-const HARLEQUIN = { supplier: "HARLEQUIN", amount: 17345.0, detail: "Plot 2 £7,660 + Plot 3 £9,685 still to invoice, from their own schedules on invoice 07" }
+/**
+ * Harlequin state a remaining balance per plot on every invoice; there is no
+ * quote row for them.
+ *
+ * THIS IS THE PLOT CONTRACTS ONLY. They also bill garages, measured per m2 as
+ * they are built (£48/m2), and E/O works — neither sits in any contract sum, so
+ * neither can be counted here. Plot 1's garage has not been billed at all yet.
+ * The true remaining figure is therefore HIGHER than this by whatever the
+ * garages and extras come to, and the detail says so rather than implying this
+ * is their whole account.
+ */
+const HARLEQUIN = {
+  supplier: "HARLEQUIN",
+  amount: 17345.0,
+  detail: "Plot 2 £7,660 + Plot 3 £9,685 per invoice 07. Plot contracts only — garages (£48/m², Plot 1's not yet billed) and E/O works are extra",
+}
 
 export async function getPosition(projectId: number): Promise<Position | null> {
   const c = await getFundingCommercial(projectId)

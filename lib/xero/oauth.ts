@@ -56,6 +56,15 @@ const SCOPES = [
   // documents to Xero retrospectively. This completes the scope set so no
   // further consent round-trips are needed.
   "accounting.attachments",
+  // 2026-08-23: cash in the bank against bills to pay. Xero already holds the
+  // bank feed, so no separate open-banking connection is needed — only read
+  // access to the balance reports. All three were pre-flighted against Xero's
+  // authorize endpoint before being added; `accounting.reports.bankstatement.read`
+  // was tried at the same time and is REJECTED for this app, so the Reconcile
+  // page's unreconciled statement lines remain unreadable. Do not re-add it.
+  "accounting.reports.balancesheet.read",
+  "accounting.reports.trialbalance.read",
+  "accounting.reports.banksummary.read",
 ].join(" ")
 
 /** How long a pending authorisation attempt (PKCE verifier) stays redeemable. Xero's own consent screen is normally completed in well under this. */

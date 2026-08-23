@@ -151,7 +151,10 @@ export async function matchSpendToInvoices({ execute }: { execute: boolean }): P
   const noInvoice: SpendNoInvoice[] = []
   const usedInvoiceIds = new Set<number>()
 
-  for (const tx of spend) {
+  // Oldest payment first, so a run of identical monthly amounts pairs off in
+  // date order rather than an arbitrary one.
+  const spendByDate = [...spend].sort((a, b) => (xeroMsDateToIso(a.Date) ?? "").localeCompare(xeroMsDateToIso(b.Date) ?? ""))
+  for (const tx of spendByDate) {
     const paidDate = xeroMsDateToIso(tx.Date)
     const contact = (tx.Contact?.Name ?? "").trim()
     const supplier = contact ? aliasMap.get(normaliseSupplierName(contact)) : undefined
@@ -170,7 +173,20 @@ export async function matchSpendToInvoices({ execute }: { execute: boolean }): P
 
     // Already accounted for? A paid invoice of exactly this amount means this
     // money is recognised — recognising it again would double-count.
-    if (forSupplier.some((i) => i.status === "paid" && pence(i.gross) === amount && inWindow(i))) continue
+    //
+    // The paid invoice is CONSUMED when it absorbs a payment. Without that, a
+    // supplier billing the same amount every month hides every later payment:
+    // George Wilson invoices £6,000 monthly, so SM01-SM06 (all paid) absorbed
+    // every £6,000 payment in the window and SM07 could never match, even
+    // though its payment was sitting in Xero. One invoice settles one payment,
+    // on both sides.
+    const settled = forSupplier.find(
+      (i) => i.status === "paid" && pence(i.gross) === amount && inWindow(i) && !usedInvoiceIds.has(i.id),
+    )
+    if (settled) {
+      usedInvoiceIds.add(settled.id)
+      continue
+    }
 
     const candidates = forSupplier.filter((i) => i.status !== "paid" && !usedInvoiceIds.has(i.id) && pence(i.gross) === amount && inWindow(i))
 

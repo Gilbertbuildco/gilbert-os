@@ -7,11 +7,40 @@
  */
 import { getCashPosition } from "../lib/funding/cash-position"
 import { pool } from "../lib/db"
+import { xeroGet } from "../lib/xero/client"
 const m = (n: number) => `£${n.toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2})}`
 const p = (await getCashPosition(1))!
 
 // Harlequin state their own remaining balance per plot on every invoice.
 const HARLEQUIN_LEFT = 17345.00
+
+/**
+ * How much of a contract has been drawn is NOT simply what the OS has invoices
+ * for. Several trades are paid against payments coded straight to a cost
+ * account with no bill behind them — Rhys Harvey has £12,789.00 of spend on
+ * account 5010 against only £2,025 of invoices in the OS. Counting invoices
+ * alone said £25,960 was still to come when the true figure is far lower.
+ *
+ * So drawn = the greater of (OS invoices) and (money actually paid to that
+ * supplier). A payment is proof the value has been drawn even when the
+ * document has not reached us.
+ */
+const d = (v: any) => { const mm=/\/Date\((-?\d+)/.exec(String(v??"")); return mm ? new Date(Number(mm[1])).toISOString().slice(0,10) : "?" }
+const spendRes = await xeroGet(`/api.xro/2.0/BankTransactions?where=${encodeURIComponent('Type=="SPEND"')}`, { headers: { Accept: "application/json" } })
+const spendTx = (((await spendRes.json()) as any).BankTransactions ?? []).filter((t: any) => t.Status !== "DELETED")
+const paidBySupplier = new Map<string, number>()
+for (const t of spendTx) {
+  const name = (t.Contact?.Name ?? "").toLowerCase()
+  // Payments are gross; contracts are quoted ex-VAT. Use the line net where Xero has it.
+  const net = (t.LineItems ?? []).reduce((a: number, l: any) => a + Number(l.LineAmount ?? 0), 0) || Number(t.Total)
+  paidBySupplier.set(name, (paidBySupplier.get(name) ?? 0) + net)
+}
+const paidFor = (supplier: string) => {
+  const key = supplier.toLowerCase()
+  let best = 0
+  for (const [n, v] of paidBySupplier) if (n.includes(key.split(" ")[0]) || key.includes(n.split(" ")[0])) best = Math.max(best, v)
+  return best
+}
 
 const { rows: acc } = await pool.query(`
   SELECT COALESCE(s.name, q.supplier_name_raw) sup, SUM(q.net) quoted,
@@ -29,10 +58,14 @@ console.log("\n═══ 2. CONTRACTED — quote signed, work still to invoice �
 let contracted = HARLEQUIN_LEFT
 console.log(`  ${m(HARLEQUIN_LEFT).padStart(13)}  HARLEQUIN  (Plot 2 £7,660 + Plot 3 £9,685, per their draw schedules)`)
 for (const a of acc) {
-  const left = Number(a.quoted) - Number(a.inv)
+  const invoiced = Number(a.inv)
+  const paid = paidFor(String(a.sup))
+  const drawn = Math.max(invoiced, paid)
+  const left = Number(a.quoted) - drawn
   if (left <= 0.005) continue
   contracted += left
-  console.log(`  ${m(left).padStart(13)}  ${String(a.sup).slice(0,34).padEnd(35)} quoted ${m(Number(a.quoted))}, invoiced ${m(Number(a.inv))}`)
+  const note = paid > invoiced ? `  [paid ${m(paid)} exceeds invoices ${m(invoiced)} — using paid]` : ""
+  console.log(`  ${m(left).padStart(13)}  ${String(a.sup).slice(0,30).padEnd(31)} quoted ${m(Number(a.quoted))}, drawn ${m(drawn)}${note}`)
 }
 console.log(`  ${m(contracted).padStart(13)}  TOTAL contracted`)
 

@@ -53,6 +53,24 @@ export type Breakdown = {
   totals: { budget: number; spent: number; drawn: number; leftToSpend: number; leftToDraw: number }
   /** Facility-level figures, which are the reliable ones — per-line drawdown is only allocated on some lines. */
   facility: { total: number; certified: number; leftToDraw: number }
+  /**
+   * Cash in against cash out, gross. The per-line figures above are build-cost,
+   * mapped-to-a-line, ex-VAT and paid — a much narrower measure than money that
+   * has moved. Comparing total drawings against them suggested a quarter of a
+   * million pounds in hand when the account holds ten thousand. This is the
+   * honest comparison: what the lender actually released to the account, and
+   * what actually left it.
+   */
+  cash: {
+    certified: number
+    paidDirect: number
+    /** certified - paidDirect: what reached the account. */
+    received: number
+    /** Every invoice payment, gross, whatever its classification. */
+    paidOut: number
+    /** received - paidOut. Negative = more has left the account than the lender has released. */
+    net: number
+  }
   /** Confirmed spend that still maps to no funding line. */
   unmappedSpend: number
   linesWithoutDrawdown: number
@@ -118,10 +136,20 @@ export async function getBreakdown(projectId: number): Promise<Breakdown | null>
     { budget: 0, spent: 0, drawn: 0, leftToSpend: 0, leftToDraw: 0 },
   )
 
+  const paidDirect = events.filter((e) => e.directPayment).reduce((s2, e) => s2 + Number(e.certifiedTotal ?? 0), 0)
+  const { rows: [out] } = await pool.query(`
+    SELECT COALESCE(SUM(CASE WHEN i.payment_status = 'paid' THEN i.gross
+                             WHEN i.payment_status = 'part_paid' AND i.amount_paid IS NOT NULL THEN i.amount_paid
+                             ELSE 0 END), 0) AS t
+      FROM invoices i WHERE i.status = 'confirmed'`)
+  const paidOut = Number(out.t)
+  const received = certified - paidDirect
+
   return {
     lines,
     totals,
     facility: { total: facilityTotal, certified, leftToDraw: facilityTotal - certified },
+    cash: { certified, paidDirect, received, paidOut, net: received - paidOut },
     unmappedSpend: paid.unmapped,
     linesWithoutDrawdown: lines.filter((l) => l.drawn == null).length,
   }

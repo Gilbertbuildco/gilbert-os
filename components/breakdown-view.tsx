@@ -101,7 +101,6 @@ export function BreakdownView({ b }: { b: Breakdown }) {
   const fees = b.lines.filter((l) => l.section === "professional_fees")
   const over = b.lines.filter((l) => l.leftToSpend < -0.005)
   const t = b.totals
-  const aheadOfCost = b.facility.certified - t.spent
 
   return (
     <div className="flex flex-col gap-6">
@@ -114,16 +113,31 @@ export function BreakdownView({ b }: { b: Breakdown }) {
         <Headline label="Left to draw" value={money(b.facility.leftToDraw)} sub="facility still available" />
       </div>
 
-      <div className={cn("rounded-lg border p-5", aheadOfCost >= 0 ? "border-emerald-500/40 bg-emerald-500/5" : "border-amber-500/40 bg-amber-500/5")}>
+      {/* Cash in vs cash out, gross. The per-line figures are a narrower measure
+          (build-cost, mapped, ex-VAT, paid) and must never be compared with total
+          drawings — doing so implied £284k in hand against a £10k balance. */}
+      <div className={cn("rounded-lg border p-5", b.cash.net >= 0 ? "border-emerald-500/40 bg-emerald-500/5" : "border-amber-500/40 bg-amber-500/5")}>
         <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {aheadOfCost >= 0 ? "Drawn ahead of spend" : "Spent ahead of drawings"}
+          {b.cash.net >= 0 ? "Lender money received but not yet spent" : "Spent beyond what the lender has released"}
         </div>
-        <div className="mt-1 text-3xl font-semibold tabular-nums">{money(Math.abs(aheadOfCost))}</div>
-        <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-          {money(b.facility.certified)} drawn against {money(t.spent)} actually paid out.{" "}
-          {aheadOfCost >= 0
-            ? "You are holding lender money ahead of cost incurred — good for cash flow, and that much less facility remains for work still to come."
-            : "You have funded work from your own cash that the lender has not yet reimbursed."}
+        <div className="mt-1 text-3xl font-semibold tabular-nums">{money(Math.abs(b.cash.net))}</div>
+        <dl className="mt-4 space-y-1 text-sm">
+          <div className="flex justify-between gap-4"><dt>Certified by the lender</dt><dd className="tabular-nums">{money(b.cash.certified)}</dd></div>
+          <div className="flex justify-between gap-4 text-muted-foreground">
+            <dt>less paid direct to suppliers</dt><dd className="tabular-nums">−{money(b.cash.paidDirect)}</dd>
+          </div>
+          <div className="flex justify-between gap-4 border-t border-border/60 pt-1 font-medium">
+            <dt>Cash received</dt><dd className="tabular-nums">{money(b.cash.received)}</dd>
+          </div>
+          <div className="flex justify-between gap-4"><dt>Cash paid out on invoices</dt><dd className="tabular-nums">−{money(b.cash.paidOut)}</dd></div>
+          <div className="flex justify-between gap-4 border-t border-border/60 pt-1 font-semibold">
+            <dt>Net</dt><dd className="tabular-nums">{money(b.cash.net)}</dd>
+          </div>
+        </dl>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Gross, and every payment whatever its classification — so this is comparable with the bank. The per-line
+          figures below are narrower: build cost only, mapped to a funding line, ex-VAT. Do not compare those with
+          total drawings.
         </p>
       </div>
 

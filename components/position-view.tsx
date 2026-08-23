@@ -29,7 +29,7 @@ export function PositionView({ p }: { p: Position }) {
         <Big label="Owed right now" tone="out" value={money(p.owedNow.total)}
           sub={`${p.owedNow.count} unpaid invoices, inc VAT`} />
         <Big label="Left to draw down" tone="in" value={money(p.leftToDraw)}
-          sub={`${money0(p.facility.certified)} drawn of ${money0(p.facility.total)}`} />
+          sub={`${money0(p.facility.certified)} of ${money0(p.facility.total)} facility used`} />
         <Big label="Expected to pay" tone="out" value={money(p.future.total)}
           sub={`${money0(p.future.fromQuotes)} quoted · ${money0(p.future.fromOwner)} your figures`} />
       </div>
@@ -43,7 +43,7 @@ export function PositionView({ p }: { p: Position }) {
         </div>
         <dl className="mt-4 max-w-md space-y-1 text-sm">
           <div className="flex justify-between gap-4"><dt>In the bank</dt><dd className="tabular-nums">{money(p.cash?.amount ?? 0)}</dd></div>
-          <div className="flex justify-between gap-4"><dt>plus left to draw down</dt><dd className="tabular-nums">{money(p.leftToDraw)}</dd></div>
+          <div className="flex justify-between gap-4"><dt>plus left to draw down (one sum, whole facility)</dt><dd className="tabular-nums">{money(p.leftToDraw)}</dd></div>
           <div className="flex justify-between gap-4 text-muted-foreground"><dt>less owed right now</dt><dd className="tabular-nums">−{money(p.owedNow.total)}</dd></div>
           <div className="flex justify-between gap-4 text-muted-foreground"><dt>less expected to pay</dt><dd className="tabular-nums">−{money(p.future.total)}</dd></div>
           <div className="flex justify-between gap-4 border-t border-border/60 pt-1 font-semibold">

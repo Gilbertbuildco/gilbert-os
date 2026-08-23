@@ -18,10 +18,15 @@ import { getDrawdownEvents, getFundingCommercial } from "./queries"
  * anything else. It is listed by name under `noPriceYet` so the gap is visible
  * rather than filled in (non-negotiable #1).
  *
- * DRAWN AGAINST A QUOTE is the greater of invoices raised and money paid.
+ * PAID AGAINST A QUOTE is the greater of invoices raised and money paid.
  * Several trades are paid without an invoice ever reaching us — Rhys Harvey had
  * £12,789 of payments against £2,025 of invoices — and counting invoices alone
  * overstates what is still to come.
+ *
+ * "Drawn" is reserved for the lender's facility and is NEVER used of a supplier.
+ * The two are unconnected: money left to draw is one sum against the facility as
+ * a whole, not something apportioned to a trade. Mixing the words here implied a
+ * link that does not exist.
  */
 export type FuturePayment = {
   supplier: string
@@ -43,7 +48,7 @@ export type Position = {
 }
 
 /** Harlequin state a remaining balance per plot on every invoice; there is no quote row for it. */
-const HARLEQUIN = { supplier: "HARLEQUIN", amount: 17345.0, detail: "Plot 2 £7,660 + Plot 3 £9,685, from their own draw schedules on invoice 07" }
+const HARLEQUIN = { supplier: "HARLEQUIN", amount: 17345.0, detail: "Plot 2 £7,660 + Plot 3 £9,685 still to invoice, from their own schedules on invoice 07" }
 
 export async function getPosition(projectId: number): Promise<Position | null> {
   const c = await getFundingCommercial(projectId)
@@ -100,11 +105,11 @@ export async function getPosition(projectId: number): Promise<Position | null> {
       items.push({ supplier: label, amount: Number(r.quoted), origin: "owner", detail: "figure you gave me — no supplier document" })
       continue
     }
-    const drawn = Math.max(Number(r.invoiced), paidBy.get(r.sup) ?? 0)
-    const left = Number(r.quoted) - drawn
+    const paid = Math.max(Number(r.invoiced), paidBy.get(r.sup) ?? 0)
+    const left = Number(r.quoted) - paid
     if (left > 0.005)
       items.push({ supplier: r.sup, amount: left, origin: "quote",
-        detail: `accepted quote ${fmt(Number(r.quoted))}, ${fmt(drawn)} already drawn` })
+        detail: `accepted quote ${fmt(Number(r.quoted))}, ${fmt(paid)} already paid` })
   }
   items.push({ supplier: HARLEQUIN.supplier, amount: HARLEQUIN.amount, origin: "quote", detail: HARLEQUIN.detail })
   items.sort((a, b) => b.amount - a.amount)

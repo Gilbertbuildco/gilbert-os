@@ -1,6 +1,5 @@
 import Link from "next/link"
 import { PageHeader } from "@/components/page-header"
-import { CommercialView } from "@/components/commercial-view"
 import { FundingVsActual } from "@/components/funding-vs-actual"
 import { QuotesVsActualView } from "@/components/quotes-vs-actual"
 import { CashPositionView } from "@/components/cash-position-view"
@@ -15,8 +14,6 @@ import { cn } from "@/lib/utils"
 import {
   getProjectOptions,
   getProjectBySlug,
-  getCostPackagesForProject,
-  getLineItemsForProject,
   getCostPackageOptions,
   getLineItemsForCostPackages,
   getQuotesVsActual,
@@ -24,11 +21,12 @@ import {
 import { getFundingCommercial, getDrawdownEvents, type DrawdownEvent } from "@/lib/funding/queries"
 import { getCashPosition } from "@/lib/funding/cash-position"
 import { getGoldentreeSchedule } from "@/lib/funding/goldentree"
+import { applyLineGroups } from "@/lib/funding/line-groups"
 import { apportionSpend, type FundingLineInput, type MappingInput } from "@/lib/funding/calculations"
 
 export const dynamic = "force-dynamic"
 
-type CommercialTab = "budget" | "funding" | "quotes" | "cash" | "goldentree"
+type CommercialTab = "funding" | "quotes" | "cash" | "goldentree"
 
 /**
  * Same classification `apportionSpend`'s internal share logic uses (single
@@ -53,19 +51,31 @@ export default async function CommercialPage({
   const { project, view, line } = await searchParams
   const projects = await getProjectOptions()
   const tab: CommercialTab =
-    view === "funding" ? "funding" : view === "quotes" ? "quotes" : view === "cash" ? "cash" : view === "goldentree" ? "goldentree" : "budget"
+    view === "quotes" ? "quotes" : view === "cash" ? "cash" : view === "goldentree" ? "goldentree" : "funding"
 
   const selectedSlug = project ?? projects[0]?.slug ?? null
   const selected = selectedSlug ? await getProjectBySlug(selectedSlug) : null
 
-  const [packages, lineItems] = selected && tab === "budget"
-    ? await Promise.all([
-        getCostPackagesForProject(selected.id),
-        getLineItemsForProject(selected.id),
-      ])
-    : [[], []]
 
-  const funding = selected && tab === "funding" ? await getFundingCommercial(selected.id) : null
+  const fundingRaw = selected && tab === "funding" ? await getFundingCommercial(selected.id) : null
+  /**
+   * First/second fix plumbing and electrical are one trade each to the owner,
+   * and the lender's split made both read wrongly — first fix carried the whole
+   * spend while second fix sat untouched (and Second Fix Electrical has a £0
+   * allowance because Goldentree folded it into first fix).
+   *
+   * Display only: the underlying rows, and the Goldentree tab that mirrors the
+   * lender's document, are untouched (non-negotiable #2). Drill-down still
+   * targets a real line id, so expanding a grouped row opens its first member.
+   */
+  const funding = fundingRaw
+    ? { ...fundingRaw, lines: applyLineGroups(fundingRaw.lines, [
+        "originalFundingBudget", "actualSpendToDate", "committedCost", "varianceAmount",
+        "forecastCostToComplete", "forecastFinalCost", "forecastFinalVariance",
+        "fundingEarned", "fundingCertified", "fundingDrawn", "fundingRemaining",
+        "amountSpentNotYetFunded", "amountFundedAheadOfCost",
+      ]) }
+    : null
   const drawdownEvents: DrawdownEvent[] = funding ? await getDrawdownEvents(funding.budget.id) : []
   const quotesVsActual = selected && tab === "quotes" ? await getQuotesVsActual(selected.id) : null
   const cashPosition = selected && tab === "cash" ? await getCashPosition(selected.id) : null
@@ -151,19 +161,6 @@ export default async function CommercialPage({
         <div role="tablist" aria-label="Commercial view" className="inline-flex gap-1 rounded-lg border border-border bg-card p-1">
           <Link
             href={`/commercial${selectedSlug ? `?project=${selectedSlug}` : ""}`}
-            role="tab"
-            aria-selected={tab === "budget"}
-            className={cn(
-              "flex min-h-10 items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-              tab === "budget"
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            Budget
-          </Link>
-          <Link
-            href={`/commercial?view=funding${selectedSlug ? `&project=${selectedSlug}` : ""}`}
             role="tab"
             aria-selected={tab === "funding"}
             className={cn(
@@ -257,7 +254,7 @@ export default async function CommercialPage({
           ) : null}
           <QuotesVsActualView data={quotesVsActual} projectSelected={!!selected} />
         </main>
-      ) : tab === "funding" ? (
+      ) : (
         <main className="flex flex-col gap-6 px-4 py-8 sm:px-8">
           {projects.length > 1 ? (
             <div role="tablist" aria-label="Project" className="inline-flex flex-wrap gap-1 rounded-lg border border-border bg-card p-1">
@@ -288,13 +285,6 @@ export default async function CommercialPage({
             drawdownEvents={drawdownEvents}
           />
         </main>
-      ) : (
-        <CommercialView
-          projects={projects}
-          selectedSlug={selected ? selectedSlug : null}
-          packages={packages}
-          lineItems={lineItems}
-        />
       )}
     </>
   )

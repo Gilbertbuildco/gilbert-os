@@ -25,6 +25,10 @@ LOG="$HOME/Library/Logs/GilbertOS/reconcile-$(date +%Y-%m-%d).log"
   echo "--- Bank payments vs OS invoices (report only) ---"
   npx tsx --env-file=.env.local --env-file=.env.development.local scripts/match-xero-spend.mts 2>&1 | tail -40
   echo
+  echo "--- Payment status vs money actually in Xero ---"
+  npx tsx --env-file=.env.local --env-file=.env.development.local scripts/refresh-supplier-paid.mts 2>&1 | tail -3
+  npx tsx --env-file=.env.local --env-file=.env.development.local scripts/audit-payment-status.mts 2>&1 | tail -30
+  echo
   echo "--- New OS invoices -> Xero bills ---"
   npx tsx --env-file=.env.local --env-file=.env.development.local scripts/push-invoices-to-xero.mts --execute 2>&1 | tail -20
   echo

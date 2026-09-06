@@ -91,7 +91,7 @@ tell application "Mail"
       end try
     end repeat
     -- Report how many messages were actually reachable. Every fetch above is
-    -- wrapped in `try`, so when Mail is slow EVERY message errors, each error
+    -- wrapped in a try block, so when Mail is slow EVERY message errors, each error
     -- is swallowed, and the loop returns an empty string with no failure of
     -- any kind. A broken scan and a clean "no invoices found" then look
     -- identical. This counter is what tells them apart.

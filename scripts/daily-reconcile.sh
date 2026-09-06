@@ -7,9 +7,10 @@
 # the OS's own scheduler: it runs whether or not any app is open, and with
 # StartCalendarInterval it fires a missed run when the Mac next wakes.
 #
-# Scope is deliberately the XERO half only. Reading email needs Apple Mail,
-# which wedges under scripted access and cannot be trusted unattended; that
-# stays a supervised step until it moves to the Graph API.
+# Covers BOTH halves now. The email sweep reads the Mail store on disk rather
+# than driving Mail, which is why it can run unattended: Mail wedges within
+# seconds under scripted access, but the .emlx files can be read directly since
+# Full Disk Access was granted.
 set -u
 export NVM_DIR="$HOME/.nvm"
 . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
@@ -24,6 +25,9 @@ LOG="$HOME/Library/Logs/GilbertOS/reconcile-$(date +%Y-%m-%d).log"
   echo
   echo "--- Bank payments vs OS invoices (report only) ---"
   npx tsx --env-file=.env.local --env-file=.env.development.local scripts/match-xero-spend.mts 2>&1 | tail -40
+  echo
+  echo "--- New invoice emails (sweeps every mailbox, including Clutter) ---"
+  npx tsx --env-file=.env.local --env-file=.env.development.local scripts/sweep-mail-store.mts --days=7 2>&1 | tail -30
   echo
   echo "--- Payment status vs money actually in Xero ---"
   npx tsx --env-file=.env.local --env-file=.env.development.local scripts/refresh-supplier-paid.mts 2>&1 | tail -3

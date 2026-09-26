@@ -1,0 +1,10 @@
+import { pool } from "../lib/db"
+const d = await pool.query(`select supplier_id, transaction_type, invoice_number, count(*) n from invoices group by 1,2,3 having count(*)>1`)
+console.log(`duplicates: ${d.rows.length===0?"0 — clean":JSON.stringify(d.rows)}`)
+const r = await pool.query(`select count(*) n, sum(gross)::numeric g from invoices where created_at::date = current_date`)
+console.log(`ingested today: ${r.rows[0].n} invoices, ${Number(r.rows[0].g).toFixed(2)}`)
+const t = await pool.query(`select count(*) n, sum(gross)::numeric g from invoices where transaction_type='invoice'`)
+console.log(`OS total now: ${t.rows[0].n} invoices, ${Number(t.rows[0].g).toFixed(2)}`)
+const s = await pool.query(`select count(*) n from suppliers`)
+console.log(`suppliers: ${s.rows[0].n}`)
+process.exit(0)

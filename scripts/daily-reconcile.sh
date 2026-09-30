@@ -48,7 +48,22 @@ if [ "$sweep_stale" = "1" ]; then
   npx tsx --env-file=.env.local --env-file=.env.development.local scripts/match-xero-spend.mts 2>&1 | tail -40
   echo
   echo "--- New invoice emails (sweeps every mailbox, including Clutter) ---"
-  npx tsx --env-file=.env.local --env-file=.env.development.local scripts/sweep-mail-store.mts --days=7 2>&1 | tail -30
+  # launchd's zsh has no Full Disk Access, so the TCC-protected Mail store is
+  # unreadable here. The Claude scheduled task owns the email half - it runs in a
+  # context that DOES have access (proven 29 Sep: "Mail store is readable from
+  # this session"). Try anyway in case access is ever granted, but degrade to one
+  # clear line instead of a stack trace every morning.
+  if npx tsx --env-file=.env.local --env-file=.env.development.local scripts/sweep-mail-store.mts --days=7 >/tmp/gos-sweep.$$ 2>&1; then
+    grep -E "swept|invoice-shaped|AWAITING|^  20" /tmp/gos-sweep.$$ | head -30
+  elif grep -q "No mail files readable" /tmp/gos-sweep.$$; then
+    echo "skipped here - no Full Disk Access under launchd. The Claude scheduled"
+    echo "task runs the sweep instead; the staleness banner above is the alarm if"
+    echo "it stops."
+  else
+    echo "SWEEP FAILED for a reason other than access:"
+    grep -viE "SECURITY WARNING|sslmode|^\(node|major version|To prepare|See https" /tmp/gos-sweep.$$ | head -12
+  fi
+  rm -f /tmp/gos-sweep.$$
   echo
   echo "--- Payment status vs money actually in Xero ---"
   npx tsx --env-file=.env.local --env-file=.env.development.local scripts/refresh-supplier-paid.mts 2>&1 | tail -3

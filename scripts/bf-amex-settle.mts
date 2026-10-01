@@ -9,6 +9,12 @@
  * would reclaim the same VAT a second time, which is exactly what happened with
  * the earlier Bradfords Amex payments.
  *
+ * NOTE WORDING IS LOAD-BEARING: lib/reconciliation/match-spend.ts protects a
+ * row from being downgraded only if payment_notes mentions "owner". The first
+ * version of this note did not, so the 1 Oct daily run pulled all twenty back
+ * to unpaid from Xero's bill status. Any owner-asserted payment status must say
+ * "Owner-confirmed".
+ *
  * Five of the twenty are not held and have no document anywhere on disk. Their
  * gross comes from the Bradfords account statement; net and VAT are derived at
  * 20%, which every Bradfords invoice read so far uses throughout. Flagged
@@ -17,7 +23,7 @@
 import { pool } from "../lib/db"
 const EXECUTE = process.argv.includes("--execute")
 const PAID_DATE = "2026-09-30"
-const NOTE = "Settled 30 Sep 2026 on Amex; the bank payment goes to Tom Gilbert to clear the card. VAT is reclaimed on this invoice — the Amex reimbursement must carry none."
+const NOTE = "Owner-confirmed 2026-09-30: settled on Amex; the bank payment goes to Tom Gilbert to clear the card. VAT is reclaimed on this invoice — the Amex reimbursement must carry none."
 const HELD = ["78483398","78481976","78494276","78508226","78513175","78518272","78575574",
               "78530306","78537916","78537307","78536853","78536200","78547422","78554269","78568125"]
 const NEW: [string,string,number][] = [

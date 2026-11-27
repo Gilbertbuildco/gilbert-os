@@ -16,7 +16,7 @@ futures:
   fee_bps: 5                   # 0.05% taker
   slippage_bps: 2
   funding_rate_8h_pct: 0.005   # approximation of the 2-year average; longs pay, shorts receive
-  vol_target_pct: 30           # THIS sets position size. 25 = cautious, 30 = balanced, 35 = aggressive
+  vol_target_pct: 35           # THIS sets position size. 25 = cautious, 30 = balanced, 35 = aggressive (chosen)
   max_gross_leverage: 3        # total notional never above 3x equity
   rebalance_band_pct: 20       # skip small adjustments to save fees
   min_order: 10

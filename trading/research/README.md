@@ -155,3 +155,4 @@ it ends at £1,724 against the simulation's £1,722, with the same 677 trades.
 | `risk_check.py` | Brake variants and one-year bootstrap |
 | `universe.py` | 3 vs 6 vs 11 coins |
 | `validate_bot.py` | Replays the data through the bot's futures engine and compares |
+| `trades.py` | Replays at a chosen vol target and lists every trade, best and worst |

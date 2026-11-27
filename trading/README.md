@@ -52,8 +52,8 @@ python -m trader run            # checks hourly, rebalances once after each dail
 python -m trader status         # positions, exposure, margin, drawdown
 ```
 
-- **Position size comes from `vol_target_pct`**, not the leverage setting. 30% is the default. In the
-  backtest it peaked at 1.1× equity, with a worst drawdown of 16%.
+- **Position size comes from `vol_target_pct`**, not the leverage setting. 35% is the default. In the
+  backtest it peaked at 1.3× equity, with a worst drawdown of about 19%.
 - **100× cross margin** only means very little margin is locked up. The bot checks every hour whether the
   worst price since the last check would have liquidated the account.
 - **Drawdown brake:** from a 20% drawdown positions shrink, and at 25% everything is closed and trading stops.

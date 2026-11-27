@@ -44,3 +44,17 @@ def test_claude_backtest_needs_confirmation(tmp_path):
     p = write_cfg(tmp_path)
     with pytest.raises(SystemExit):
         main(["-c", str(p), "backtest", "--strategy", "claude"])
+
+
+def test_futures_cli(tmp_path, capsys):
+    data = yaml.safe_load((EXAMPLE.parent / "config.futures.example.yaml").read_text())
+    data["market"]["source"] = "synthetic"
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(data))
+    main(["-c", str(p), "run", "--once"])
+    main(["-c", str(p), "status"])
+    main(["-c", str(p), "report"])
+    main(["-c", str(p), "flatten"])
+    main(["-c", str(p), "resume"])
+    out = capsys.readouterr().out
+    assert "Paper futures" in out and "exposure" in out

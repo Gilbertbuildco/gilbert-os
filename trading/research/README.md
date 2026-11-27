@@ -93,6 +93,44 @@ account-level leverage under 2×. Never set the exchange to 10× or more.
 - Doubling costs to 0.14% per side keeps a Sharpe of 1.09. Tripling gives 0.99.
 - Moving the daily decision time across the day gives Sharpe 1.2 to 1.5. Midnight UTC, used above, is the worst.
 
+## Small-account simulation (£1,000, 100× cross margin)
+
+`sim.py` trades hour by hour: it rebalances at the open after each daily close, pays real funding, skips
+orders under 10 and adjustments under 20% of target, and checks liquidation every hour at each position's
+worst price. Nothing was liquidated at any setting. The exchange leverage only sets how little margin is
+locked up: at a 30% target the account used about £4 to £11 of margin.
+
+| Vol target | £1,000 became | Worst drawdown | Year 1 | Year 2 | Peak exposure |
+|---|---|---|---|---|---|
+| 25% | £1,573 | -14% | +2% | +55% | 0.9× |
+| **30%** | **£1,701** | **-16%** | **+1%** | **+68%** | **1.1×** |
+| 35% | £1,840 | -19% | +1% | +82% | 1.3× |
+| 40% | £1,967 | -21% | +1% | +95% | 1.5× |
+| 50% | £2,224 | -26% | -1% | +125% | 2.0× |
+
+The period is 1 Nov 2024 to 25 Nov 2026. The first three months are warm-up with no positions.
+
+**Drawdown brakes.** Shrinking positions from a 10% drawdown hurt badly: it cut size after losses and missed
+the recoveries. A brake that starts at 20% and closes everything at 25% never triggered in the backtest, so
+it cost nothing, and it caps the tail.
+
+**One-year odds** from a block bootstrap of daily returns (20-day blocks, 20,000 paths), brake on:
+
+| Vol target | Chance of hitting the 25% stop | Chance of a losing year | Median year | Bad year (5th percentile) |
+|---|---|---|---|---|
+| 25% | under 0.1% | 14% | +25% | -11% |
+| **30%** | **2%** | **17%** | **+30%** | **-17%** |
+| 35% | 4% | 20% | +32% | -20% |
+
+The bootstrap reuses this period's returns, which included a strong trending year. Treat it as optimistic.
+
+**More coins did not help.** Running the same rules on 6 or 11 large perps (adding XRP, DOGE, BNB, ADA,
+AVAX, LINK, LTC, DOT) lowered the Sharpe from 1.15 to 0.92 and 0.56. The smaller coins whipsaw more.
+See `universe.py`.
+
+**The bot matches the research.** `validate_bot.py` replays the two years through the bot's own futures engine:
+it ends at £1,724 against the simulation's £1,722, with the same 677 trades.
+
 ## Caveats
 
 - **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
@@ -113,3 +151,7 @@ account-level leverage under 2×. Never set the exchange to 10× or more.
 | `grid.py` | Strategy family grid, year one vs year two |
 | `ensemble.py` | Ensemble variants and filters |
 | `final.py`, `hours.py` | Sizing, costs, stress and decision-time tests for the chosen strategy |
+| `sim.py` | Hour-by-hour small-account simulation with margin, liquidation and brakes |
+| `risk_check.py` | Brake variants and one-year bootstrap |
+| `universe.py` | 3 vs 6 vs 11 coins |
+| `validate_bot.py` | Replays the data through the bot's futures engine and compares |

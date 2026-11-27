@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .broker import PaperBroker
+from .futures import FuturesPaperBroker
 from .config import load_config
 from .data import CSVFeed, FeedError, KrakenFeed, make_feed, save_csv, synthetic_series
 from .engine import Engine
@@ -25,6 +26,10 @@ def _config(args):
 
 
 def _broker(cfg) -> PaperBroker:
+    if cfg.mode == "futures":
+        f = cfg.futures
+        return FuturesPaperBroker(cfg.path(cfg.account.db_path), cfg.account.starting_cash, f.fee_bps,
+                                  f.slippage_bps, f.leverage, f.maintenance_margin_pct)
     return PaperBroker(cfg.path(cfg.account.db_path), cfg.account.starting_cash,
                        cfg.execution.fee_bps, cfg.execution.slippage_bps)
 
@@ -51,8 +56,68 @@ def _print_cycle(res) -> None:
               f"~${d.meta['est_cost_usd']}")
 
 
+def _futures_feeds(cfg):
+    from .data import SyntheticFeed
+    if cfg.market.source == "kraken":
+        return KrakenFeed(60), KrakenFeed(1440)
+    if cfg.market.source == "synthetic":
+        return SyntheticFeed(60), SyntheticFeed(1440)
+    sys.exit("Futures mode supports market.source kraken or synthetic.")
+
+
+def _print_futures_cycle(res, broker) -> None:
+    print(f"\n=== {fmt_ts(res.ts)}  equity {res.equity:,.2f}  drawdown {res.drawdown_pct:.1f}%")
+    if res.skipped:
+        print(f"  skipped: {res.skipped}")
+        return
+    if res.decision:
+        for s, why in res.decision.reasoning.items():
+            print(f"  {s}: {why}")
+        if res.decision.meta.get("overseer"):
+            print(f"  overseer: {res.decision.meta['overseer']}")
+    for n in res.notes:
+        print(f"  note: {n}")
+    for f in res.fills:
+        print(f"  FILL {f.side} {f.qty:.8g} {f.symbol} @ {f.price:,.6g}  fee {f.fee:.2f}  pnl {f.realized_pnl:+,.2f}  ({f.reason})")
+    if not res.rebalanced and not res.fills:
+        print("  hourly check: no action")
+
+
+def cmd_run_futures(args, cfg) -> None:
+    from .futures_engine import FuturesEngine
+    from .strategies.overseer import ClaudeOverseer
+
+    broker = _broker(cfg)
+    overseer = ClaudeOverseer(cfg) if cfg.futures.overseer == "claude" else None
+    engine = FuturesEngine(cfg, broker, overseer=overseer, kill_switch_path=cfg.kill_switch_path)
+    hourly_feed, daily_feed = _futures_feeds(cfg)
+    f = cfg.futures
+    print(f"Paper futures: {', '.join(cfg.market.symbols)}, trend ensemble, vol target {f.vol_target_pct}%, "
+          f"{f.leverage:g}x cross margin, brake from {f.drawdown_brake_start_pct}% drawdown, stop at "
+          f"{f.drawdown_stop_pct}%, overseer {f.overseer}. Checks hourly, rebalances after each daily close. Ctrl+C to stop.")
+    while True:
+        hourly, daily = {}, {}
+        for s in cfg.market.symbols:
+            try:
+                hourly[s] = hourly_feed.candles(s, 3)
+                daily[s] = daily_feed.candles(s, 150)
+            except FeedError as e:
+                log.error("%s", e)
+        _print_futures_cycle(engine.run_cycle(hourly, daily), broker)
+        if args.once:
+            return
+        wait = 3600 - time.time() % 3600 + 20
+        try:
+            time.sleep(wait)
+        except KeyboardInterrupt:
+            print("\nStopped.")
+            return
+
+
 def cmd_run(args) -> None:
     cfg = _config(args)
+    if cfg.mode == "futures":
+        return cmd_run_futures(args, cfg)
     broker = _broker(cfg)
     engine = Engine(cfg, broker, make_strategy(cfg), kill_switch_path=cfg.kill_switch_path)
     feed = make_feed(cfg)
@@ -92,8 +157,15 @@ def cmd_status(args) -> None:
         print("KILL SWITCH ON: the bot is not trading. `python -m trader resume` to turn it off.")
     for s, p in b.positions().items():
         px = prices.get(s, p.avg_price)
-        print(f"  {s:<10} qty {p.qty:.8g}  avg {p.avg_price:,.6g}  last {px:,.6g}  value {p.qty * px:,.2f}  "
-              f"pnl {(px / p.avg_price - 1) * 100:+.2f}%")
+        side = "LONG " if p.qty > 0 else "SHORT"
+        print(f"  {s:<10} {side} qty {abs(p.qty):.8g}  entry {p.avg_price:,.6g}  last {px:,.6g}  "
+              f"notional {abs(p.qty) * px:,.2f}  pnl {(px / p.avg_price - 1) * 100 * (1 if p.qty > 0 else -1):+.2f}%")
+    if cfg.mode == "futures":
+        peak = float(b.get_meta("peak_equity", eq))
+        gross = b.gross_notional(prices)
+        print(f"  exposure {gross / eq if eq else 0:.2f}x equity, margin used {b.initial_margin(prices):,.2f} at "
+              f"{cfg.futures.leverage:g}x, drawdown {(1 - eq / peak) * 100 if peak else 0:.1f}% from peak {peak:,.2f}, "
+              f"funding paid {b.funding_paid():+,.2f}")
     last = b.recent_decisions(1)
     if last:
         d = last[0]
@@ -125,6 +197,8 @@ def cmd_backtest(args) -> None:
     from .backtest import run_backtest
 
     cfg = _config(args)
+    if cfg.mode == "futures":
+        sys.exit("Futures backtests live in research/: see research/README.md (sim.py, validate_bot.py).")
     if args.strategy:
         cfg.strategy.name = args.strategy
     if cfg.strategy.name == "claude" and not args.yes:
@@ -168,7 +242,10 @@ def cmd_flatten(args) -> None:
             px = feed.candles(s, 1)[-1].close
         except (FeedError, IndexError):
             px = b.last_prices().get(s, p.avg_price)
-        f = b.sell(s, p.qty, px, ts, "manual flatten")
+        if cfg.mode == "futures":
+            f = b.trade(s, -p.qty * px, px, ts, "manual flatten")
+        else:
+            f = b.sell(s, p.qty, px, ts, "manual flatten")
         print(f"Sold {f.qty:.8g} {s} @ {f.price:,.6g}  pnl {f.realized_pnl:+,.2f}")
     print(f"Cash {b.cash:,.2f}")
 
@@ -183,6 +260,10 @@ def cmd_stop(args) -> None:
 def cmd_resume(args) -> None:
     cfg = _config(args)
     cfg.kill_switch_path.unlink(missing_ok=True)
+    if cfg.mode == "futures":
+        _broker(cfg).set_meta("peak_equity", None)
+        print("Kill switch off. Drawdown is now measured from current equity.")
+        return
     print("Kill switch off.")
 
 

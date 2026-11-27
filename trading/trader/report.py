@@ -17,7 +17,8 @@ def max_drawdown(values: list[float]) -> float:
 def summarize(broker: PaperBroker) -> dict:
     hist = broker.equity_history()
     trades = broker.trades()
-    sells = [t for t in trades if t["side"] == "sell"]
+    # A closing trade realised a gain or loss beyond its own fee. Spot buys log 0; futures opens log -fee.
+    sells = [t for t in trades if t["realized_pnl"] != 0 and abs(t["realized_pnl"] + t["fee"]) > 1e-9]
     start = broker.starting_cash
     end = hist[-1]["equity"] if hist else broker.cash
     cost = 0.0
@@ -32,7 +33,7 @@ def summarize(broker: PaperBroker) -> dict:
         "trades": len(trades),
         "closing_trades": len(sells),
         "win_rate_pct": round(sum(t["realized_pnl"] > 0 for t in sells) / len(sells) * 100, 1) if sells else None,
-        "realized_pnl": round(sum(t["realized_pnl"] for t in sells), 2),
+        "realized_pnl": round(sum(t["realized_pnl"] for t in trades), 2),
         "fees_paid": round(sum(t["fee"] for t in trades), 2),
         "cycles": len(hist),
         "claude_cost_usd": round(cost, 2),

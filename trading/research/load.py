@@ -2,9 +2,9 @@ import pandas as pd, numpy as np
 from pathlib import Path
 D = Path(__file__).resolve().parent / "data" / "clean"
 SYMS = ["BTC", "ETH", "SOL"]
-def load():
+def load(syms=None):
     px, fund = {}, {}
-    for s in SYMS:
+    for s in (syms or SYMS):
         df = pd.read_csv(D / f"{s}USDT_1h.csv")
         df.index = pd.to_datetime(df.ts, unit="s", utc=True)
         px[s] = df.drop(columns="ts").astype(float)

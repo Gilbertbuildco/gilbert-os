@@ -7,7 +7,7 @@ HERE = Path(__file__).resolve().parent
 RAW, CLEAN = HERE / "data" / "raw", HERE / "data" / "clean"
 RAW.mkdir(parents=True, exist_ok=True); CLEAN.mkdir(parents=True, exist_ok=True)
 BASE = "https://data.binance.vision/data/futures/um"
-SYMS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+SYMS = sys.argv[1:] or ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 months = []
 y, m = 2024, 11
 while (y, m) <= (2026, 10):

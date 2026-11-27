@@ -1,0 +1,31 @@
+# Paper perpetual-futures account running the researched trend ensemble (research/README.md).
+# Copy to config.yaml. Simulated money only: no exchange account and no exchange keys.
+mode: futures
+
+account:
+  starting_cash: 1000          # treat as £1,000; the paper account ignores GBP/USD moves
+  db_path: data/futures.db
+
+market:
+  source: kraken               # live public prices (spot, a close proxy for perp prices) | synthetic
+  symbols: [BTC/USD, ETH/USD, SOL/USD]
+
+futures:
+  leverage: 100                # exchange setting: only sets how little margin is locked up
+  maintenance_margin_pct: 0.5
+  fee_bps: 5                   # 0.05% taker
+  slippage_bps: 2
+  funding_rate_8h_pct: 0.005   # approximation of the 2-year average; longs pay, shorts receive
+  vol_target_pct: 30           # THIS sets position size. 25 = cautious, 30 = balanced, 35 = aggressive
+  max_gross_leverage: 3        # total notional never above 3x equity
+  rebalance_band_pct: 20       # skip small adjustments to save fees
+  min_order: 10
+  drawdown_brake_start_pct: 20 # shrink positions linearly from 20% drawdown...
+  drawdown_stop_pct: 25        # ...to zero at 25%: close everything and halt until `resume`
+  overseer: "off"              # "off" | claude: Claude may shrink or close positions, never open or grow them
+
+strategy:
+  claude:                      # used only when futures.overseer is claude
+    model: claude-opus-5-5
+    effort: medium
+    max_tokens: 16000

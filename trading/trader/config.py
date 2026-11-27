@@ -54,6 +54,22 @@ class ClaudeConfig:
 
 
 @dataclass
+class FuturesConfig:
+    leverage: float = 100.0              # exchange leverage setting; only sets margin locked, not risk
+    maintenance_margin_pct: float = 0.5
+    fee_bps: float = 5.0                 # taker fee on notional
+    slippage_bps: float = 2.0
+    funding_rate_8h_pct: float = 0.005   # paper approximation: longs pay, shorts receive
+    vol_target_pct: float = 30.0         # portfolio volatility target; this is what sets position size
+    max_gross_leverage: float = 3.0      # hard cap on total notional / equity
+    rebalance_band_pct: float = 20.0     # skip adjustments smaller than this share of the target
+    min_order: float = 10.0
+    drawdown_brake_start_pct: float = 20.0
+    drawdown_stop_pct: float = 25.0
+    overseer: str = "off"                # off | claude (Claude may only shrink or close positions)
+
+
+@dataclass
 class StrategyConfig:
     name: str = "claude"
     sma_cross: SmaCrossConfig = field(default_factory=SmaCrossConfig)
@@ -62,11 +78,13 @@ class StrategyConfig:
 
 @dataclass
 class Config:
+    mode: str = "spot"
     account: AccountConfig = field(default_factory=AccountConfig)
     market: MarketConfig = field(default_factory=MarketConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
+    futures: FuturesConfig = field(default_factory=FuturesConfig)
     base_dir: Path = field(default_factory=Path.cwd)
 
     def path(self, p: str) -> Path:
@@ -101,6 +119,7 @@ _SECTIONS = {
     "SmaCrossConfig": SmaCrossConfig,
     "ClaudeConfig": ClaudeConfig,
     "StrategyConfig": StrategyConfig,
+    "FuturesConfig": FuturesConfig,
 }
 
 
@@ -123,6 +142,17 @@ def validate(cfg: Config) -> None:
             raise ValueError(f"risk.{name} must be between 0 and 100, got {v}")
     if cfg.market.source not in ("kraken", "synthetic", "csv"):
         raise ValueError(f"market.source must be kraken, synthetic or csv, got {cfg.market.source!r}")
+    if cfg.mode not in ("spot", "futures"):
+        raise ValueError(f"mode must be spot or futures, got {cfg.mode!r}")
+    f = cfg.futures
+    if f.overseer is False:  # YAML reads a bare `off` as false
+        f.overseer = "off"
+    if f.overseer not in ("off", "claude"):
+        raise ValueError(f"futures.overseer must be off or claude, got {f.overseer!r}")
+    if not 0 < f.drawdown_brake_start_pct < f.drawdown_stop_pct <= 100:
+        raise ValueError("futures needs 0 < drawdown_brake_start_pct < drawdown_stop_pct <= 100")
+    if f.leverage < 1 or f.max_gross_leverage <= 0:
+        raise ValueError("futures.leverage must be >= 1 and max_gross_leverage > 0")
     if cfg.strategy.name not in ("claude", "sma_cross"):
         raise ValueError(f"strategy.name must be claude or sma_cross, got {cfg.strategy.name!r}")
     for s in cfg.market.symbols:

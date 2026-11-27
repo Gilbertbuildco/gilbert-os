@@ -40,6 +40,30 @@ python -m trader run                        # keep going, one cycle per candle
 To try it with no API key and no network, set `market.source: synthetic` and
 `strategy.name: sma_cross` in `config.yaml`.
 
+## Futures mode: the researched trend strategy
+
+`config.futures.example.yaml` runs a paper perpetual-futures account with the strategy from
+[`research/`](research/README.md): long or short BTC, ETH and SOL depending on six daily trend votes,
+sized by volatility.
+
+```bash
+cp config.futures.example.yaml config.yaml
+python -m trader run            # checks hourly, rebalances once after each daily close (00:00 UTC)
+python -m trader status         # positions, exposure, margin, drawdown
+```
+
+- **Position size comes from `vol_target_pct`**, not the leverage setting. 30% is the default. In the
+  backtest it peaked at 1.1× equity, with a worst drawdown of 16%.
+- **100× cross margin** only means very little margin is locked up. The bot checks every hour whether the
+  worst price since the last check would have liquidated the account.
+- **Drawdown brake:** from a 20% drawdown positions shrink, and at 25% everything is closed and trading stops.
+  `python -m trader resume` restarts it, measuring drawdown from that point.
+- **Funding** is approximated at 0.005% per 8 hours: longs pay it and shorts receive it.
+- **Optional Claude overseer** (`overseer: claude`): once a day Claude reviews the targets and may shrink or
+  close positions. The engine prevents it from opening, growing or flipping anything. If the call fails, the
+  rules stand.
+- Prices come from Kraken spot, a close proxy for perpetual prices.
+
 ## Commands
 
 | Command | What it does |

@@ -131,6 +131,35 @@ See `universe.py`.
 **The bot matches the research.** `validate_bot.py` replays the two years through the bot's own futures engine:
 it ends at £1,724 against the simulation's £1,722, with the same 677 trades.
 
+## Fixed-risk sizing with stop losses
+
+`stop_sizing.py` sizes each position so hitting its stop loses a fixed share of equity, with the same entry
+votes (4 of 6 agreeing), a trailing stop at 2 or 4 daily ATR checked hourly, gap fills at the open, and
+100× cross margin. 2 ATR beat 4 ATR at every risk level.
+
+| Risk per trade (2 ATR stop) | £1,000 became | Worst drawdown | Largest position |
+|---|---|---|---|
+| 1% (£10) | £1,336 | -10% | about 0.7× equity |
+| 2% (£20) | £1,729 | -19% | |
+| 5% (£50) | £3,196 | -41% | |
+| 10% (£100) | £5,881 | -65% | |
+| 20% (£200) | £6,476 | -90% | about 13× equity |
+
+At £200 risk the account went from £4,690 in May 2025 to £470 in October 2025 before recovering.
+
+Trade outcomes averaged +0.15R with a t-stat of 2.06, so the edge is real but uncertain. `stop_bootstrap.py`
+resamples trades with replacement, three positions at a time, over two years:
+
+| Risk per trade | Backtest edge: chance of falling below £100 | Half the edge | No edge |
+|---|---|---|---|
+| 2% | 0% | 0% | 0% |
+| 5% | 0% | 0% | 0% |
+| 10% | 0% | 1% | 10% |
+| 20% | 2% | 23% | 69% |
+
+With half the edge, 20% risk has a median outcome of about break-even, worse than 5% risk. Over-betting a
+small, uncertain edge lowers growth as well as raising ruin risk.
+
 ## Caveats
 
 - **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
@@ -156,3 +185,4 @@ it ends at £1,724 against the simulation's £1,722, with the same 677 trades.
 | `universe.py` | 3 vs 6 vs 11 coins |
 | `validate_bot.py` | Replays the data through the bot's futures engine and compares |
 | `trades.py` | Replays at a chosen vol target and lists every trade, best and worst |
+| `stop_sizing.py`, `stop_bootstrap.py` | Fixed-risk stop-loss sizing and its ruin odds |

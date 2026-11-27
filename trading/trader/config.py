@@ -151,8 +151,8 @@ def validate(cfg: Config) -> None:
         f.overseer = "off"
     if f.overseer not in ("off", "claude"):
         raise ValueError(f"futures.overseer must be off or claude, got {f.overseer!r}")
-    if not 0 < f.drawdown_brake_start_pct < f.drawdown_stop_pct <= 100:
-        raise ValueError("futures needs 0 < drawdown_brake_start_pct < drawdown_stop_pct <= 100")
+    if not 0 < f.drawdown_brake_start_pct <= f.drawdown_stop_pct <= 100:
+        raise ValueError("futures needs 0 < drawdown_brake_start_pct <= drawdown_stop_pct <= 100")
     if f.leverage < 1 or f.max_gross_leverage <= 0:
         raise ValueError("futures.leverage must be >= 1 and max_gross_leverage > 0")
     if cfg.strategy.name not in ("claude", "sma_cross"):

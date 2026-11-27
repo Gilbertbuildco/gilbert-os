@@ -78,6 +78,8 @@ def test_trend_votes_and_sizing():
 
 
 def test_brake_multiplier():
+    assert brake_multiplier(0.50, 0.75, 0.75) == 1   # stop only, no shrinking
+    assert brake_multiplier(0.75, 0.75, 0.75) == 0
     assert brake_multiplier(0.10, 0.20, 0.25) == 1
     assert brake_multiplier(0.225, 0.20, 0.25) == pytest.approx(0.5)
     assert brake_multiplier(0.30, 0.20, 0.25) == 0

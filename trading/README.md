@@ -52,17 +52,19 @@ python -m trader run            # checks hourly, rebalances once after each dail
 python -m trader status         # positions, exposure, margin, drawdown
 ```
 
-- **Position size comes from `vol_target_pct`** and `breakout_risk_pct`, not the leverage setting. With the
-  defaults, the two-year replay turned £1,000 into £5,707, with a worst drawdown of 43% and peak exposure of
-  3.2× equity. The trend strategy alone made £1,867 with a 19.5% drawdown.
+- **Position size comes from `vol_target_pct`** and `breakout_risk_pct`, not the leverage setting. Replayed from
+  September 2020 to November 2026 with the defaults, £1,000 became £65,104, every calendar year was positive,
+  the worst drawdown was 52% and peak exposure 4.5× equity. At `breakout_risk_pct: 1` it became £25,142 with a
+  39% worst drawdown. See research/README.md.
 - **100× cross margin** only means very little margin is locked up. The bot checks every hour whether the
   worst price since the last check would have liquidated the account.
 - **Monday range breakout** (`breakout_enabled`, on by default): Monday's UTC high and low set the week's
   range. From Tuesday, the bot buys a break above the high or sells a break below the low, only in the trend's
   direction, with the stop at the other side of the range and an exit at the end of the week. Each trade risks
   `breakout_risk_pct` (2%) of equity.
-- **Drawdown brake:** from a 40% drawdown positions shrink, and at 50% everything is closed and trading stops.
-  `python -m trader resume` restarts it, measuring drawdown from that point.
+- **Drawdown stop:** at a 75% drawdown everything is closed and trading stops; `python -m trader resume` restarts
+  it. Positions are not shrunk on the way down: in the 2020-2026 replay, shrinking after losses left the account
+  too small to recover. Set `drawdown_brake_start_pct` below the stop to shrink anyway.
 - **Funding** is approximated at 0.005% per 8 hours: longs pay it and shorts receive it.
 - **Optional Claude overseer** (`overseer: claude`): once a day Claude reviews the targets and may shrink or
   close positions. The engine prevents it from opening, growing or flipping anything. If the call fails, the

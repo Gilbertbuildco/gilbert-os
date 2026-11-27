@@ -291,9 +291,38 @@ No fade was reliably profitable on any range. The Monday range breakout with the
 strategy found: highest return per trade, most trades per year, and positive in both years. The monthly
 variants have too few trades (32 to 94) to judge.
 
+## Longer history: January 2020 to November 2026
+
+`download_full.py` fetches every hourly candle since the perps' archive starts (BTC and ETH from January 2020,
+SOL from its September 2020 listing). Everything before November 2024 was never used to design anything.
+SOL's 127 missing hours are filled with the last price. The March 2020 crash falls inside the 100-day warm-up.
+`longhistory.py` runs the tests.
+
+**The trend ensemble held up.** On unseen data (to October 2024) £1,000 became £3,506 on all three coins and
+£4,367 on BTC and ETH. Every year was positive except 2022 on BTC and ETH (-2% in the simulation, +0.4% in the
+bot replay). The worst drawdown was about 32%, deeper than the 19.5% seen in the design period.
+
+**The Monday breakout weakened but stayed positive.** On unseen data, with the trend filter: 393 trades,
++0.18R per trade (t 2.11), against +0.40R in the design period. By year: 2021 +0.32R, 2022 -0.10R, 2023 +0.28R,
+2024 +0.22R. Part of the original result was luck, but the edge is real.
+
+**The 40-50% drawdown brake was harmful.** The combined bot fell 46% in 2022, the brake shrank positions almost to
+zero, and with no way back to the old peak it returned about 0% a year from 2023 to 2026 while the trend strategy
+alone made 14% to 56% a year. With the brake off, all three coins from September 2020:
+
+| Bot replay | £1,000 became | Unseen period only | Worst drawdown | Peak exposure | Worst hour | Closest to liquidation |
+|---|---|---|---|---|---|---|
+| Trend only | £7,086 | £3,506 | -32% | 1.5× | -8.6% | 136× margin |
+| Trend + breakout at 1% | £25,142 | £6,361 | -39% | 2.6× | -15.4% | 74× margin |
+| Trend + breakout at 2% | £65,104 | £9,876 | -52% | 4.5× | -22.6% | 44× margin |
+
+Yearly returns at 2%: 2021 +247%, 2022 +11%, 2023 +95%, 2024 +53%, 2025 +116%, 2026 +144%. On BTC and ETH alone
+from January 2020 the same setup made £49,070 (2% risk) and £23,440 (1% risk), losing 16% and 8% in 2022. The
+bot's default now has no shrinking and a halt at a 75% drawdown, which was never reached.
+
 ## Caveats
 
-- **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
+- **The design period was two years, and year two was a strong trend.** The 2020-2026 test above addresses this. In the choppy year the strategy roughly
   broke even. Expect long flat or losing stretches: 12 of 25 months were winners.
 - The first three months are warm-up for the 100-day average, so year one has nine trading months.
 - Backtest fills are perfect. Real futures add queueing, partial fills and occasional exchange outages.
@@ -322,3 +351,4 @@ variants have too few trades (32 to 94) to judge.
 | `download_1m.py`, `monday_*.py` | Monday range fade and breakout on 1-minute data |
 | `validate_breakout_bot.py` | Bot replay with both strategies, and liquidation stress |
 | `ranges.py` | Fade vs breakout on Monday, previous-week, month-open and previous-month ranges |
+| `download_full.py`, `longhistory.py` | Out-of-sample test on 2020-2024 and the full-history bot replay |

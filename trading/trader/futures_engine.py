@@ -36,8 +36,11 @@ class FuturesCycle:
 
 
 def brake_multiplier(dd: float, start: float, stop: float) -> float:
-    if dd <= start:
+    """1 below `start`, shrinking linearly to 0 at `stop`. With start == stop there is no shrinking, only the stop."""
+    if dd < start or (dd <= start and stop > start):
         return 1.0
+    if stop <= start:
+        return 0.0 if dd >= stop else 1.0
     return max(0.0, min(1.0, (stop - dd) / (stop - start)))
 
 

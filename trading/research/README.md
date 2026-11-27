@@ -183,6 +183,31 @@ Resampled two-year paths, three positions at a time, 2 ATR trailing stop:
 With a 1 ATR stop, fixed £200 was wiped out in 37% of paths even at the backtest edge. Ruin is concentrated
 in the first months, while the fixed amount is a large share of a small account.
 
+## Pyramiding: adding to winners
+
+`pyramid.py` adds a unit each time price moves a set number of ATR further in our favour (checked hourly),
+optionally moving the stop up behind each add (Turtle style), with unit size fixed or re-computed from equity
+including open profit. `pyramid_check.py` confirms the code: in a clean synthetic trend, unlimited compounding
+turns £1,000 into astronomical sums.
+
+**On the real data, unlimited or frequent adding destroyed the account.** Every unlimited variant under
+£100-then-£200 or fixed £200 sizing was wiped out, mostly between April and October 2025. Under 5% of equity
+sizing, unlimited compounding finished between £9 and £1,346. The cause is that crypto trends here retraced
+2 ATR or more after most adds. Each add raised the average entry, and moving the stop up turned trades that
+had been +3 ATR into losses. The win rate fell from 34% to around 20%.
+
+**A single add helped modestly.** Adding one extra unit at +2 ATR, leaving the stop to trail as before:
+
+| 5% of equity sizing | £1,000 became | Year 1 | Year 2 | Worst drawdown | Average trade |
+|---|---|---|---|---|---|
+| No adding | £3,196 | +1% | +215% | -41% | +0.15R |
+| One add at +2 ATR | £4,417 | -20% | +455% | -55% | +0.23R |
+
+The result holds for adds at +1.5 to +3 ATR. But it amplifies the dependence on trending years: year one went
+from flat to -20%. Resampled with half the edge, the median end was £1,731 against £1,609 without adding, with a
+27% chance of losing money against 21%. It is a bigger bet on trends, not a better edge. `pyramid_gentle.py` and
+`pyramid_robust.py` hold these tests.
+
 ## Caveats
 
 - **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
@@ -210,3 +235,4 @@ in the first months, while the fixed amount is a large share of a small account.
 | `trades.py` | Replays at a chosen vol target and lists every trade, best and worst |
 | `stop_sizing.py`, `stop_bootstrap.py` | Fixed-risk stop-loss sizing and its ruin odds |
 | `fixed_risk.py` | Fixed £ risk, tight stops, and step-up schemes |
+| `pyramid*.py` | Adding to winners: unlimited, capped and single-add variants |

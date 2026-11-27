@@ -1,0 +1,40 @@
+# Copy to config.yaml and edit. Everything here is a PAPER (simulated) account:
+# no exchange account, no real money, no API keys except ANTHROPIC_API_KEY
+# for the Claude strategy.
+
+account:
+  starting_cash: 10000        # simulated cash in the quote currency
+  db_path: data/paper.db      # trades, positions, decisions and equity history
+
+market:
+  source: kraken              # kraken (live public prices) | synthetic | csv
+  symbols: [BTC/USD, ETH/USD, SOL/USD]
+  interval_minutes: 60        # candle size and how often the bot acts (Kraken: 1,5,15,30,60,240,1440)
+  lookback: 200               # candles handed to the strategy each cycle
+  csv_dir: data/csv           # for source: csv, files named BTC-USD.csv etc.
+
+execution:
+  fee_bps: 26                 # 0.26% per trade, roughly Kraken's taker fee
+  slippage_bps: 5             # 0.05% worse than the last price on every fill
+  min_trade_usd: 25           # ignore orders smaller than this
+  rebalance_threshold_pct: 2  # ignore target changes smaller than 2% of equity
+
+# Hard limits enforced in code. The strategy (including Claude) cannot override them.
+risk:
+  max_position_pct: 40        # no single coin above 40% of equity
+  max_total_exposure_pct: 90  # always keep at least 10% in cash
+  max_daily_loss_pct: 5       # down 5% on the UTC day -> only sells allowed until tomorrow
+  max_trades_per_day: 20      # stop-loss exits are exempt
+  stop_loss_pct: 10           # exit any position 10% below its average cost
+
+strategy:
+  name: claude                # claude | sma_cross
+  sma_cross:
+    fast: 20
+    slow: 50
+    allocation_pct: 30
+  claude:
+    model: claude-opus-5-5
+    effort: medium            # low | medium | high | xhigh | max (higher = more thinking, more cost)
+    max_tokens: 16000
+    history_decisions: 6      # how many of its own past decisions Claude sees each cycle

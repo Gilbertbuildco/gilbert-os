@@ -262,6 +262,35 @@ Its weekly returns correlate 0.74 with the trend ensemble: it is mostly the same
 exposure 3.2×, 399 breakout fills. The worst single hour cost 10.6% of equity, and equity never fell below
 61× the maintenance margin.
 
+## Range definitions compared: fade vs breakout
+
+`ranges.py` runs both styles on four range definitions with the same fees and fill rules.
+
+How range-bound was the market? Share of time price sat inside each range while it was traded:
+
+| Range | Time inside | Periods never broken |
+|---|---|---|
+| Monday's range (traded Tue-Sun) | 47% | 3% |
+| Previous week's range | 70% | 19% |
+| First week of the month (traded rest of month) | 50% | 8% |
+| Previous month's range | 69% | 14% |
+
+Price spends most of its time inside the wider ranges, but fading them still did not pay: when the ranges
+break, the moves are large, and the edges get poked through before reversing.
+
+Best variant of each style, all three coins, 2% risk per trade compounded in time order:
+
+| Range | Best fade | t-stat | Best breakout | t-stat | Breakout R per year | £1,000 at 2% risk |
+|---|---|---|---|---|---|---|
+| **Monday** | -0.08R | -1.50 | **+0.40R (trend filter)** | **2.92** | **38.5** | **£4,263** |
+| Previous week | +0.01R | 0.07 | +0.18R (midpoint stop, filter) | 1.31 | 13.1 | £1,591 |
+| First week of month | -0.21R | -1.37 | +0.32R (no filter, 83 trades) | 2.00 | 12.7 | £1,634 |
+| Previous month | +0.04R | 0.17 | +0.16R (midpoint stop, filter) | 1.14 | 3.1 | £1,128 |
+
+No fade was reliably profitable on any range. The Monday range breakout with the trend filter remains the best
+strategy found: highest return per trade, most trades per year, and positive in both years. The monthly
+variants have too few trades (32 to 94) to judge.
+
 ## Caveats
 
 - **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
@@ -292,3 +321,4 @@ exposure 3.2×, 399 breakout fills. The worst single hour cost 10.6% of equity, 
 | `pyramid*.py` | Adding to winners: unlimited, capped and single-add variants |
 | `download_1m.py`, `monday_*.py` | Monday range fade and breakout on 1-minute data |
 | `validate_breakout_bot.py` | Bot replay with both strategies, and liquidation stress |
+| `ranges.py` | Fade vs breakout on Monday, previous-week, month-open and previous-month ranges |

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sim import *
 
 
-def run(px, fund, risk, k, fee=0.0005, slip=0.0002, stop_slip=0.001, equity0=1000.0, leverage=100, mmr=0.005):
+def run(px, fund, risk, k, fee=0.0005, slip=0.0002, stop_slip=0.001, equity0=1000.0, leverage=100, mmr=0.005, fixed=None):
     syms = list(px)
     o = pd.DataFrame({s: px[s].open for s in syms}); h = pd.DataFrame({s: px[s].high for s in syms})
     l = pd.DataFrame({s: px[s].low for s in syms}); c = pd.DataFrame({s: px[s].close for s in syms})
@@ -31,7 +31,7 @@ def run(px, fund, risk, k, fee=0.0005, slip=0.0002, stop_slip=0.001, equity0=100
         nonlocal cash
         v = qty[s] * price; cash += v; fee_ = abs(v) * fee; cash -= fee_
         pnl = qty[s] * (price - entry_px[s]) - fee_ - abs(qty[s] * entry_px[s]) * fee
-        results.append(pnl); rmult.append(pnl / (risk * entry_eq[s]))
+        results.append(pnl); rmult.append(pnl / (fixed if fixed else risk * entry_eq[s]))
         path.append((t, s, "long" if qty[s] > 0 else "short", entry_px[s], price, abs(qty[s] * entry_px[s]), pnl))
         qty[s] = 0.0; stop[s] = None; best[s] = None
     for t in c.index:
@@ -52,7 +52,8 @@ def run(px, fund, risk, k, fee=0.0005, slip=0.0002, stop_slip=0.001, equity0=100
                     stop[s] = max(stop[s], best[s] - k * a) if have > 0 else min(stop[s], best[s] + k * a)
                 elif want:
                     dist = k * a
-                    q = risk * eq / dist * want
+                    q = (fixed if fixed else risk * eq) / dist * want
+                    if eq <= 0: continue
                     gross_after = sum(abs(qty[x]) * op[x] for x in syms) + abs(q) * op[s]
                     if gross_after / leverage > eq:  # margin cap
                         q *= max(0.0, (eq * leverage - (gross_after - abs(q) * op[s]))) / (abs(q) * op[s])

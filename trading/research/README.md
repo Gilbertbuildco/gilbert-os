@@ -160,6 +160,29 @@ resamples trades with replacement, three positions at a time, over two years:
 With half the edge, 20% risk has a median outcome of about break-even, worse than 5% risk. Over-betting a
 small, uncertain edge lowers growth as well as raising ruin risk.
 
+## Fixed £ risk per trade
+
+`fixed_risk.py` risks a fixed amount per trade rather than a share of equity. Average daily ranges are
+3.5% (BTC), 5.4% (ETH) and 6.3% (SOL).
+
+- **Half an ATR is too tight.** Noise hits the stops: the average trade was -0.03R. With £200 risk the
+  positions reached £16,000 (16× equity), ten of twelve trades lost in one week in May 2025, and the
+  account was liquidated.
+- **1 ATR** averaged +0.19R and **2 ATR** +0.15R.
+
+Resampled two-year paths, three positions at a time, 2 ATR trailing stop:
+
+| Scheme | Wiped out (backtest edge) | Median end | Wiped out (half edge) | Median end | Wiped out (no edge) |
+|---|---|---|---|---|---|
+| Fixed £50 | 0% | £2,352 | 1% | £1,655 | |
+| 5% of equity | 0% | £3,191 | 0% | £1,605 | 0% |
+| Fixed £100 | 1% | £3,672 | 9% | £2,274 | 40% |
+| £100, then £200 from £2,000 | 1% | £4,903 | 10% | £1,990 | 40% |
+| Fixed £200 | 9% | £6,235 | 30% | £3,213 | 66% |
+
+With a 1 ATR stop, fixed £200 was wiped out in 37% of paths even at the backtest edge. Ruin is concentrated
+in the first months, while the fixed amount is a large share of a small account.
+
 ## Caveats
 
 - **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
@@ -186,3 +209,4 @@ small, uncertain edge lowers growth as well as raising ruin risk.
 | `validate_bot.py` | Replays the data through the bot's futures engine and compares |
 | `trades.py` | Replays at a chosen vol target and lists every trade, best and worst |
 | `stop_sizing.py`, `stop_bootstrap.py` | Fixed-risk stop-loss sizing and its ruin odds |
+| `fixed_risk.py` | Fixed £ risk, tight stops, and step-up schemes |

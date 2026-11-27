@@ -208,6 +208,30 @@ from flat to -20%. Resampled with half the edge, the median end was £1,731 agai
 27% chance of losing money against 21%. It is a bigger bet on trends, not a better edge. `pyramid_gentle.py` and
 `pyramid_robust.py` hold these tests.
 
+## Monday range (mean reversion on 1-minute data)
+
+`download_1m.py` fetches 1-minute perp candles (1,087,200 per coin, no gaps). `monday_range.py` uses Monday's
+UTC high and low as a range, then from Tuesday to Sunday sells the high and buys the low, targets the other
+side, flips at the target, stops a buffer beyond the range, and re-arms after price closes back inside.
+Limit fills at the range edges pay 0.02%, stops 0.05% plus 0.01% slippage. If a minute touches the entry and
+the stop, the stop is assumed hit. `monday_checks.py` shows the code profits on a synthetic range-bound market.
+
+The average Monday range was 4.0% of price on BTC, 6.3% on ETH and 7.2% on SOL, and price broke out of it
+in 90% to 94% of weeks.
+
+| Stop buffer | Trades per week | Win rate | Average trade, before fees | After fees |
+|---|---|---|---|---|
+| $10 on BTC (same % on ETH/SOL, about 0.011%) | 35 to 46 | 0.3% to 0.5% | -1.1R to 0R | about -7R |
+| 0.1% of price | 15 to 23 | 2% to 4% | -0.2R to +0.3R | -0.9R to -0.4R |
+| 0.5% of price | 5 to 8 | 10% to 14% | -0.1R to +0.2R | -0.2R to +0.04R |
+| 25% of the Monday range | 3 to 4 | 22% to 25% | -0.1R to +0.1R | -0.2R to 0R |
+
+With a $10 stop, fees alone are about 7R per losing trade: a round trip costs 0.08% of the position, against
+a stop 0.011% away. At £10 risk per trade the typical position was about £88,000, and every coin wiped out a
+£1,000 account within its first trading week (BTC on 5 Nov 2024, after 16 trades). Wider stops lose more
+slowly. Only SOL with wide stops was roughly flat, and not statistically different from zero.
+`monday_money.py` holds the account figures.
+
 ## Caveats
 
 - **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
@@ -236,3 +260,4 @@ from flat to -20%. Resampled with half the edge, the median end was £1,731 agai
 | `stop_sizing.py`, `stop_bootstrap.py` | Fixed-risk stop-loss sizing and its ruin odds |
 | `fixed_risk.py` | Fixed £ risk, tight stops, and step-up schemes |
 | `pyramid*.py` | Adding to winners: unlimited, capped and single-add variants |
+| `download_1m.py`, `monday_*.py` | Monday range strategy on 1-minute data |

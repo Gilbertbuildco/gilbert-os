@@ -20,9 +20,11 @@ futures:
   max_gross_leverage: 3        # total notional never above 3x equity
   rebalance_band_pct: 20       # skip small adjustments to save fees
   min_order: 10
-  drawdown_brake_start_pct: 20 # shrink positions linearly from 20% drawdown...
-  drawdown_stop_pct: 25        # ...to zero at 25%: close everything and halt until `resume`
+  drawdown_brake_start_pct: 40 # shrink positions linearly from 40% drawdown...
+  drawdown_stop_pct: 50        # ...to zero at 50%: close everything and halt until `resume`
   overseer: "off"              # "off" | claude: Claude may shrink or close positions, never open or grow them
+  breakout_enabled: true       # Monday range breakout, in the trend's direction, alongside the trend strategy
+  breakout_risk_pct: 2         # equity lost if a breakout trade hits its stop (the other side of Monday's range)
 
 strategy:
   claude:                      # used only when futures.overseer is claude

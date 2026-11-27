@@ -232,6 +232,36 @@ a stop 0.011% away. At £10 risk per trade the typical position was about £88,0
 slowly. Only SOL with wide stops was roughly flat, and not statistically different from zero.
 `monday_money.py` holds the account figures.
 
+## Monday range breakout (the opposite trade)
+
+`monday_breakout.py` tests a pre-set grid of 24 variants on 1-minute data: stop at the range midpoint or the
+opposite edge, exit at a 1× or 2× range target or at week end, entry buffer 0% or 10% of the range, with or
+without a trend filter (trade only in the direction of the trend-ensemble score at Monday's close). At most one
+long and one short per coin per week. Breakout entries pay the taker fee plus slippage.
+
+| Variant (all three coins) | Trades | Average trade | t-stat | Year 1 | Year 2 |
+|---|---|---|---|---|---|
+| Opposite-edge stop, week-end exit, no filter | 440 | +0.15R | 1.93 | +0.16R | +0.14R |
+| **Same, with trend filter (chosen)** | **198** | **+0.40R** | **2.92** | **+0.45R** | **+0.36R** |
+| Same, with a 1× range target | 440 | -0.03R | -0.64 | | |
+
+The chosen variant was the best on year one and held up in year two. Targets cut the winners and hurt every
+variant. By coin: BTC +0.43R, ETH +0.64R, SOL +0.14R. Longs +0.55R, shorts +0.29R. Without the 10 best trades the
+average falls to +0.08R, so profits come from a few big weeks.
+
+Its weekly returns correlate 0.74 with the trend ensemble: it is mostly the same trend bet with a different entry.
+`monday_breakout_eval.py` combines them:
+
+| Weekly portfolio | £1,000 became | Worst weekly drawdown |
+|---|---|---|
+| Trend ensemble 35% | £1,841 | -16% |
+| Trend 35% + breakout at 2% risk per trade | £5,660 | -34% |
+| Trend 35% + breakout at 3% risk per trade | £8,526 | -44% |
+
+`validate_breakout_bot.py` replays both through the bot hour by hour: £5,707, worst drawdown -43%, peak
+exposure 3.2×, 399 breakout fills. The worst single hour cost 10.6% of equity, and equity never fell below
+61× the maintenance margin.
+
 ## Caveats
 
 - **Two years is short, and year two was a strong trend.** In the choppy year the strategy roughly
@@ -260,4 +290,5 @@ slowly. Only SOL with wide stops was roughly flat, and not statistically differe
 | `stop_sizing.py`, `stop_bootstrap.py` | Fixed-risk stop-loss sizing and its ruin odds |
 | `fixed_risk.py` | Fixed £ risk, tight stops, and step-up schemes |
 | `pyramid*.py` | Adding to winners: unlimited, capped and single-add variants |
-| `download_1m.py`, `monday_*.py` | Monday range strategy on 1-minute data |
+| `download_1m.py`, `monday_*.py` | Monday range fade and breakout on 1-minute data |
+| `validate_breakout_bot.py` | Bot replay with both strategies, and liquidation stress |

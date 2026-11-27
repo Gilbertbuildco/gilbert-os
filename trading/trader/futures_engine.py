@@ -14,6 +14,9 @@ from pathlib import Path
 from .config import Config
 from .futures import FuturesPaperBroker, MarginError
 from .models import Candle, Decision, Fill
+import json
+
+from .strategies.monday_breakout import DAY, WEEK, monday_range, trend_direction, week_start
 from .strategies.trend_ensemble import TrendEnsemble
 
 log = logging.getLogger(__name__)
@@ -78,6 +81,7 @@ class FuturesEngine:
                 worst[s] = min(c.low for c in recent) if p.qty > 0 else max(c.high for c in recent)
             if b.liquidation_check(worst):
                 fills = b.close_all(worst, ts, "LIQUIDATION", slippage=False)
+                self._clear_breakouts()
                 self._halt(f"liquidated at {time.ctime(ts)}")
                 eq = b.record_equity(ts, prices)
                 b.set_meta("last_cycle_ts", ts)
@@ -101,13 +105,19 @@ class FuturesEngine:
         if dd >= stop:
             if b.positions():
                 fills += b.close_all(prices, ts, f"drawdown stop {self.f.drawdown_stop_pct}%")
+            self._clear_breakouts()
             self._halt(f"drawdown stop {dd * 100:.1f}% at {time.ctime(ts)}; review, then `resume`")
             eq = b.record_equity(ts, prices)
             b.set_meta("last_cycle_ts", ts)
             return FuturesCycle(ts, eq, dd * 100, fills, notes + [f"drawdown {dd * 100:.1f}% hit the stop, all closed"])
 
-        # 4. daily rebalance when a new daily candle has closed for every coin
         result = FuturesCycle(ts, eq, dd * 100, fills, notes)
+
+        # 4. Monday range breakouts, checked against every hourly candle closed since the last cycle
+        if self.f.breakout_enabled:
+            self._breakouts(hourly, daily, prices, eq, dd, last, ts, result)
+
+        # 5. daily trend rebalance when a new daily candle has closed for every coin
         day = min(c[-1].ts for c in daily.values() if c) if all(daily.get(s) for s in prices) else 0
         if day and day > int(b.get_meta("last_rebalance_day", 0)):
             self._rebalance(daily, prices, eq, dd, ts, result)
@@ -135,6 +145,7 @@ class FuturesEngine:
         for s, w in final.items():
             want = w * eq
             have = positions[s].qty * prices[s] if s in positions else 0.0
+            have -= self._breakout_qty(s) * prices[s]  # the breakout leg is managed separately
             diff = want - have
             if abs(diff) < f.min_order:
                 continue
@@ -158,3 +169,85 @@ class FuturesEngine:
             "fills": [f"{x.side} {x.qty:.8g} {x.symbol} @ {x.price:.6g}" for x in result.fills]})
         result.rebalanced = True
         result.decision = decision
+
+    # ---- Monday range breakout leg ------------------------------------------
+    def _bo_get(self, key: str, default=None):
+        v = self.broker.get_meta(key)
+        return json.loads(v) if v else default
+
+    def _bo_set(self, key: str, value) -> None:
+        self.broker.set_meta(key, json.dumps(value) if value is not None else None)
+
+    def _breakout_qty(self, symbol: str) -> float:
+        pos = self._bo_get(f"bo_pos:{symbol}")
+        return pos["qty"] if pos else 0.0
+
+    def _clear_breakouts(self) -> None:
+        for s in self.cfg.market.symbols:
+            self._bo_set(f"bo_pos:{s}", None)
+
+    def _breakouts(self, hourly, daily, prices, eq, dd, last, ts, result) -> None:
+        b, f = self.broker, self.f
+        m = brake_multiplier(dd, f.drawdown_brake_start_pct / 100, f.drawdown_stop_pct / 100)
+        for s in self.cfg.market.symbols:
+            pos = self._bo_get(f"bo_pos:{s}")
+            new = sorted((c for c in hourly[s] if c.ts + 3600 > last and c.ts + 3600 <= ts), key=lambda c: c.ts) \
+                if last else []
+            for c in new:
+                monday = week_start(c.ts)
+                if c.ts < monday + DAY:
+                    continue  # Monday builds the range
+                state = self._bo_get(f"bo_week:{s}")
+                if not state or state["week"] != monday:
+                    rng = monday_range(hourly[s], monday)
+                    if rng is None:
+                        continue
+                    state = {"week": monday, "high": rng[0], "low": rng[1], "dir": trend_direction(daily[s], monday),
+                             "done_long": False, "done_short": False}
+                    self._bo_set(f"bo_week:{s}", state)
+                if pos:
+                    hit = c.low <= pos["stop"] if pos["qty"] > 0 else c.high >= pos["stop"]
+                    if hit:
+                        px = min(c.open, pos["stop"]) if pos["qty"] > 0 else max(c.open, pos["stop"])
+                        fill = b.trade(s, -pos["qty"] * px, px, ts, "breakout: stop", prices)
+                        result.fills.append(fill)
+                        result.notes.append(f"{s}: breakout stopped, {self._r(pos, fill.price):+.2f}R")
+                        self._bo_set(f"bo_pos:{s}", None); pos = None
+                    continue
+                for side, level, stop, flag in ((1, state["high"], state["low"], "done_long"),
+                                                (-1, state["low"], state["high"], "done_short")):
+                    if state["dir"] != side or state[flag]:
+                        continue
+                    crossed = c.high >= level if side > 0 else c.low <= level
+                    if not crossed:
+                        continue
+                    px = max(c.open, level) if side > 0 else min(c.open, level)
+                    risk_amt = f.breakout_risk_pct / 100 * eq * m
+                    dist = abs(px - stop)
+                    state[flag] = True
+                    self._bo_set(f"bo_week:{s}", state)
+                    if risk_amt <= 0 or dist <= 0:
+                        break
+                    qty = side * risk_amt / dist
+                    try:
+                        fill = b.trade(s, qty * px, px, ts, f"breakout: {'long above' if side > 0 else 'short below'} "
+                                       f"Monday {'high' if side > 0 else 'low'}", prices)
+                    except MarginError as e:
+                        result.notes.append(f"{s}: breakout rejected, {e}")
+                        break
+                    pos = {"qty": qty, "entry": fill.price, "stop": stop, "week": monday, "risk": risk_amt}
+                    self._bo_set(f"bo_pos:{s}", pos)
+                    result.fills.append(fill)
+                    result.notes.append(f"{s}: breakout {'long' if side > 0 else 'short'} at {fill.price:,.6g}, stop "
+                                        f"{stop:,.6g}, risking {risk_amt:,.2f}")
+                    break
+            # a position from an earlier week closes at the first cycle of the new week (Sunday's last close)
+            if pos and week_start(ts) > pos["week"]:
+                fill = b.trade(s, -pos["qty"] * prices[s], prices[s], ts, "breakout: week end", prices)
+                result.fills.append(fill)
+                result.notes.append(f"{s}: breakout closed at week end, {self._r(pos, fill.price):+.2f}R")
+                self._bo_set(f"bo_pos:{s}", None)
+
+    @staticmethod
+    def _r(pos, exit_price) -> float:
+        return (exit_price - pos["entry"]) * pos["qty"] / pos["risk"] if pos["risk"] else 0.0

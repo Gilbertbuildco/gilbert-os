@@ -52,11 +52,16 @@ python -m trader run            # checks hourly, rebalances once after each dail
 python -m trader status         # positions, exposure, margin, drawdown
 ```
 
-- **Position size comes from `vol_target_pct`**, not the leverage setting. 35% is the default. In the
-  backtest it peaked at 1.3× equity, with a worst drawdown of about 19%.
+- **Position size comes from `vol_target_pct`** and `breakout_risk_pct`, not the leverage setting. With the
+  defaults, the two-year replay turned £1,000 into £5,707, with a worst drawdown of 43% and peak exposure of
+  3.2× equity. The trend strategy alone made £1,867 with a 19.5% drawdown.
 - **100× cross margin** only means very little margin is locked up. The bot checks every hour whether the
   worst price since the last check would have liquidated the account.
-- **Drawdown brake:** from a 20% drawdown positions shrink, and at 25% everything is closed and trading stops.
+- **Monday range breakout** (`breakout_enabled`, on by default): Monday's UTC high and low set the week's
+  range. From Tuesday, the bot buys a break above the high or sells a break below the low, only in the trend's
+  direction, with the stop at the other side of the range and an exit at the end of the week. Each trade risks
+  `breakout_risk_pct` (2%) of equity.
+- **Drawdown brake:** from a 40% drawdown positions shrink, and at 50% everything is closed and trading stops.
   `python -m trader resume` restarts it, measuring drawdown from that point.
 - **Funding** is approximated at 0.005% per 8 hours: longs pay it and shorts receive it.
 - **Optional Claude overseer** (`overseer: claude`): once a day Claude reviews the targets and may shrink or

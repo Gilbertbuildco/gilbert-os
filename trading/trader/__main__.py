@@ -94,12 +94,13 @@ def cmd_run_futures(args, cfg) -> None:
     f = cfg.futures
     print(f"Paper futures: {', '.join(cfg.market.symbols)}, trend ensemble, vol target {f.vol_target_pct}%, "
           f"{f.leverage:g}x cross margin, brake from {f.drawdown_brake_start_pct}% drawdown, stop at "
-          f"{f.drawdown_stop_pct}%, overseer {f.overseer}. Checks hourly, rebalances after each daily close. Ctrl+C to stop.")
+          f"{f.drawdown_stop_pct}%, overseer {f.overseer}, Monday breakout "
+          f"{'on at ' + str(f.breakout_risk_pct) + '% risk' if f.breakout_enabled else 'off'}. Checks hourly, rebalances after each daily close. Ctrl+C to stop.")
     while True:
         hourly, daily = {}, {}
         for s in cfg.market.symbols:
             try:
-                hourly[s] = hourly_feed.candles(s, 3)
+                hourly[s] = hourly_feed.candles(s, 200)  # a week of candles for the Monday range
                 daily[s] = daily_feed.candles(s, 150)
             except FeedError as e:
                 log.error("%s", e)

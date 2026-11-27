@@ -67,6 +67,8 @@ class FuturesConfig:
     drawdown_brake_start_pct: float = 20.0
     drawdown_stop_pct: float = 25.0
     overseer: str = "off"                # off | claude (Claude may only shrink or close positions)
+    breakout_enabled: bool = False       # Monday range breakout strategy alongside the trend strategy
+    breakout_risk_pct: float = 2.0       # equity lost if a breakout trade hits its stop
 
 
 @dataclass
